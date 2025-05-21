@@ -31,7 +31,9 @@ public class QueryService
     // Get database schema and context for this data source
     var dataSource = await _dataSourceManager.GetDataSourceAsync(dataSourceId);
     var schema = await _dataSourceManager.GetSchemaAsync(dataSourceId);
+    
     var schemaContext = await _dataSourceManager.GetSchemaContextAsync(dataSourceId);
+    Console.WriteLine($"Schema context length: {schemaContext.Length}");
     
     // Initial request
     var request = new LlmQueryRequest

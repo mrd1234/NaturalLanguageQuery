@@ -25,57 +25,94 @@ public class OllamaService : ILlmService
     }
 
     public async Task<LlmQueryResponse> GenerateSqlQueryAsync(LlmQueryRequest request)
+{
+    var systemPrompt = SystemPrompt.CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
+    var userPrompt = CreateUserPrompt(request);
+
+    // Include structure requirements in the prompt itself
+    var structureInstructions = @"
+Return your response in this exact JSON format:
+{
+  ""sqlQuery"": ""SELECT * FROM table;"",
+  ""explanation"": ""Description of what the query does.""
+}";
+
+    var prompt = $"{systemPrompt}\n\n{structureInstructions}\n\n{userPrompt}";
+
+    var requestData = new
     {
-        var systemPrompt = CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
-        var userPrompt = CreateUserPrompt(request);
+        model = _model,
+        prompt,
+        stream = false,
+        temperature = 0.0,
+        format = "json" // This just tells Ollama to return JSON, but doesn't define the structure
+    };
 
-        var prompt = $"{systemPrompt}\n\n{userPrompt}";
+    var response = await _httpClient.PostAsJsonAsync("api/generate", requestData);
+    response.EnsureSuccessStatusCode();
 
-        var requestData = new
-        {
-            model = _model,
-            prompt,
-            stream = false,
-            temperature = 0.0
-        };
-
-        var response = await _httpClient.PostAsJsonAsync("api/generate", requestData);
-        response.EnsureSuccessStatusCode();
-
-        var responseObject = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var content = responseObject.GetProperty("response").GetString();
-
-        return ParseLlmResponse(content, request.DataSourceType);
-    }
-
-    private string CreateSystemPrompt(string databaseSchema, string schemaContext, string dataSourceType)
-    {
-        var queryLanguage = GetQueryLanguage(dataSourceType);
+    var responseObject = await response.Content.ReadFromJsonAsync<JsonElement>();
+    var content = responseObject.GetProperty("response").GetString();
     
-        return @$"
-You are an expert SQL query generator for PostgreSQL databases. Your task is to convert natural language questions into valid PostgreSQL queries.
-
-### DATABASE SCHEMA:
-```sql
-{databaseSchema}
-ADDITIONAL CONTEXT:
-{schemaContext}
-IMPORTANT RULES:
-
-Only generate SELECT queries - no INSERT, UPDATE, DELETE, or other modifying statements.
-Wrap your SQL query in triple backticks like this: sql [YOUR QUERY HERE] 
-Keep your explanation brief and separate from the SQL code.
-Use standard PostgreSQL syntax.
-If asked about errors, generate a query to help debug the issue.
-If the schema doesn't match what's in the database, generate a query to show available tables.
-Make the query as efficient as possible.
-Use proper JOINs when necessary.
-
-FORMAT YOUR RESPONSE LIKE THIS:
-sqlSELECT * FROM example_table WHERE condition = true;
-Explanation: Brief explanation of what this query does.
-";
+    try
+    {
+        // Direct JSON deserialization
+        return JsonSerializer.Deserialize<LlmQueryResponse>(content, new JsonSerializerOptions 
+        { 
+            PropertyNameCaseInsensitive = true 
+        });
     }
+    catch (JsonException)
+    {
+        // Fallback to extract JSON from text if needed
+        var jsonMatch = System.Text.RegularExpressions.Regex.Match(content, @"\{.*\}", 
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+            
+        if (jsonMatch.Success)
+        {
+            return JsonSerializer.Deserialize<LlmQueryResponse>(jsonMatch.Value, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+        }
+        
+        // If all else fails, create a default response
+        return new LlmQueryResponse
+        {
+            SqlQuery = "",
+            Explanation = $"Failed to parse JSON from LLM response: {content}"
+        };
+    }
+}
+
+//     private string CreateSystemPrompt(string databaseSchema, string schemaContext, string dataSourceType)
+//     {
+//         var queryLanguage = GetQueryLanguage(dataSourceType);
+//     
+//         return @$"
+// You are an expert SQL query generator for PostgreSQL databases. Your task is to convert natural language questions into valid PostgreSQL queries.
+//
+// ### DATABASE SCHEMA:
+// ```sql
+// {databaseSchema}
+// ADDITIONAL CONTEXT:
+// {schemaContext}
+// IMPORTANT RULES:
+//
+// Only generate SELECT queries - no INSERT, UPDATE, DELETE, or other modifying statements.
+// Wrap your SQL query in triple backticks like this: sql [YOUR QUERY HERE] 
+// Keep your explanation brief and separate from the SQL code.
+// Use standard PostgreSQL syntax.
+// If asked about errors, generate a query to help debug the issue.
+// If the schema doesn't match what's in the database, generate a query to show available tables.
+// Make the query as efficient as possible.
+// Use proper JOINs when necessary.
+//
+// FORMAT YOUR RESPONSE LIKE THIS:
+// sqlSELECT * FROM example_table WHERE condition = true;
+// Explanation: Brief explanation of what this query does.
+// ";
+//     }
 
     private string CreateUserPrompt(LlmQueryRequest request)
     {

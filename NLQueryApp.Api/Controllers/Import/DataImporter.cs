@@ -40,11 +40,12 @@ public class DataImporter
         for (var i = 0; i < files.Length; i += batchSize)
         {
             var currentBatch = files.Skip(i).Take(batchSize).ToArray();
+            var maxParallelism = Environment.ProcessorCount * 2;
             
             // Import batch of files
             await Parallel.ForEachAsync(
                 currentBatch,
-                new ParallelOptions { MaxDegreeOfParallelism = 1 }, // Reduced parallelism to avoid issues
+                new ParallelOptions { MaxDegreeOfParallelism = maxParallelism },
                 async (file, token) =>
                 {
                     await ImportFile(file);
@@ -73,12 +74,12 @@ public class DataImporter
         try
         {
             await using var cmd1 = new NpgsqlCommand(
-                "SELECT COUNT(*) FROM movement_data.movements", conn);
+                "SELECT COUNT(*) FROM team_movements.movements", conn);
             var movementResult = await cmd1.ExecuteScalarAsync();
             results.MovementsCount = movementResult != null ? Convert.ToInt32(movementResult) : 0;
             
             await using var cmd2 = new NpgsqlCommand(
-                "SELECT COUNT(*) FROM movement_data.participants", conn);
+                "SELECT COUNT(*) FROM team_movements.participants", conn);
             var participantResult = await cmd2.ExecuteScalarAsync();
             results.ParticipantsCount = participantResult != null ? Convert.ToInt32(participantResult) : 0;
         }
@@ -113,7 +114,7 @@ public class DataImporter
     
     private async Task PreloadLookup(NpgsqlConnection conn, string tableName, string idColumn, string valueColumn)
     {
-        await using var cmd = new NpgsqlCommand($"SELECT {idColumn}, {valueColumn} FROM lookup.{tableName}", conn);
+        await using var cmd = new NpgsqlCommand($"SELECT {idColumn}, {valueColumn} FROM team_movements.{tableName}", conn);
         await using var reader = await cmd.ExecuteReaderAsync();
         
         while (await reader.ReadAsync())
@@ -404,24 +405,17 @@ public class DataImporter
                 : "Unknown"
         );
         
+        // Improved date parsing with better error handling
         DateTime? startDate = null;
-        if (root.TryGetProperty("startDate", out var startDateElement) && 
-            startDateElement.ValueKind == JsonValueKind.String)
+        if (root.TryGetProperty("startDate", out var startDateElement))
         {
-            if (DateTime.TryParse(startDateElement.GetString(), out var date))
-            {
-                startDate = date;
-            }
+            startDate = SafeParseDateTime(startDateElement, "startDate");
         }
         
         DateTime? endDate = null;
-        if (root.TryGetProperty("endDate", out var endDateElement) && 
-            endDateElement.ValueKind == JsonValueKind.String)
+        if (root.TryGetProperty("endDate", out var endDateElement))
         {
-            if (DateTime.TryParse(endDateElement.GetString(), out var date))
-            {
-                endDate = date;
-            }
+            endDate = SafeParseDateTime(endDateElement, "endDate");
         }
         
         string workflowDefinitionId = "Unknown";
@@ -437,22 +431,22 @@ public class DataImporter
                 workflowDefinitionId = defIdElement.GetString() ?? "Unknown";
             }
             
-            if (workflowElement.TryGetProperty("version", out var versionElement) && 
-                versionElement.ValueKind == JsonValueKind.Number)
+            // Improved version parsing with fallbacks
+            if (workflowElement.TryGetProperty("version", out var versionElement))
             {
-                workflowVersion = versionElement.GetInt32();
+                workflowVersion = SafeParseInt32(versionElement, "workflow.version", 0) ?? default;
             }
             
-            if (workflowElement.TryGetProperty("archived", out var archivedElement) && 
-                archivedElement.ValueKind == JsonValueKind.True)
+            // Improved boolean parsing
+            if (workflowElement.TryGetProperty("archived", out var archivedElement))
             {
-                workflowArchived = true;
+                workflowArchived = SafeParseBool(archivedElement, "workflow.archived", false);
             }
         }
         
         // Check if movement already exists
         await using var checkCmd = new NpgsqlCommand(
-            "SELECT id FROM movement_data.movements WHERE movement_id = @movementId", conn);
+            "SELECT id FROM team_movements.movements WHERE movement_id = @movementId", conn);
         checkCmd.Parameters.AddWithValue("@movementId", movementId);
         var existingId = await checkCmd.ExecuteScalarAsync();
         
@@ -460,7 +454,7 @@ public class DataImporter
         {
             // Update existing movement
             await using var updateCmd = new NpgsqlCommand(@"
-                UPDATE movement_data.movements SET 
+                UPDATE team_movements.movements SET 
                     employee_id = @employeeId,
                     movement_type_id = @movementTypeId,
                     status_id = @statusId,
@@ -489,7 +483,7 @@ public class DataImporter
         {
             // Insert new movement
             await using var insertCmd = new NpgsqlCommand(@"
-                INSERT INTO movement_data.movements (
+                INSERT INTO team_movements.movements (
                     movement_id,
                     employee_id,
                     movement_type_id,
@@ -533,7 +527,7 @@ public class DataImporter
     {
         // Delete existing participants for this movement
         await using var deleteCmd = new NpgsqlCommand(
-            "DELETE FROM movement_data.participants WHERE movement_id = @movementId", conn);
+            "DELETE FROM team_movements.participants WHERE movement_id = @movementId", conn);
         deleteCmd.Parameters.AddWithValue("@movementId", movementId);
         await deleteCmd.ExecuteNonQueryAsync();
         
@@ -609,7 +603,7 @@ public class DataImporter
                     : "";
                 
                 await using var insertCmd = new NpgsqlCommand(@"
-                    INSERT INTO movement_data.participants (
+                    INSERT INTO team_movements.participants (
                         movement_id,
                         employee_id,
                         name,
@@ -656,7 +650,7 @@ public class DataImporter
     {
         // Delete existing job info for this movement and type
         await using var deleteCmd = new NpgsqlCommand(
-            "DELETE FROM movement_data.job_info WHERE movement_id = @movementId AND is_current = @isCurrent", conn);
+            "DELETE FROM team_movements.job_info WHERE movement_id = @movementId AND is_current = @isCurrent", conn);
         deleteCmd.Parameters.AddWithValue("@movementId", movementId);
         deleteCmd.Parameters.AddWithValue("@isCurrent", isCurrent);
         await deleteCmd.ExecuteNonQueryAsync();
@@ -668,7 +662,7 @@ public class DataImporter
             try
             {
                 var cmd = new NpgsqlCommand(@"
-                    INSERT INTO movement_data.job_info (
+                    INSERT INTO team_movements.job_info (
                         movement_id,
                         is_current,
                         working_days_per_week,
@@ -747,9 +741,9 @@ public class DataImporter
                     throw new Exception($"Error with basic parameters: {ex.Message}", ex);
                 }
                 
-                // Working days per week
+                // Working days per week - IMPROVED TYPE CONVERSION
                 try {
-                    int? workingDaysPerWeek = null;
+                    decimal? workingDaysPerWeek = null;
                     if (jobInfoElement.TryGetProperty("workingDaysPerWeek", out var wdpwElement))
                     {
                         // Log the actual type and value for debugging
@@ -759,29 +753,31 @@ public class DataImporter
                         if (wdpwElement.ValueKind == JsonValueKind.Number)
                         {
                             try {
-                                workingDaysPerWeek = wdpwElement.GetInt32();
+                                // Try as decimal first - handles both integers and decimals
+                                decimal daysDecimal = wdpwElement.GetDecimal();
+                                workingDaysPerWeek = daysDecimal;
                             }
                             catch {
-                                // Try as double first, then convert
+                                // Try as double as fallback
                                 try {
                                     double daysDouble = wdpwElement.GetDouble();
-                                    workingDaysPerWeek = (int)Math.Round(daysDouble);
+                                    if (!double.IsNaN(daysDouble) && !double.IsInfinity(daysDouble))
+                                    {
+                                        workingDaysPerWeek = (decimal)daysDouble;
+                                    }
                                 }
                                 catch {
-                                    // If that fails, ignore
+                                    Warnings.Add($"Could not parse workingDaysPerWeek numeric value: '{rawValue}'");
                                 }
                             }
                         }
                         else if (wdpwElement.ValueKind == JsonValueKind.String)
                         {
                             string strValue = wdpwElement.GetString() ?? "";
-                            if (int.TryParse(strValue, out var wdpwInt))
+                            // Try as decimal first
+                            if (decimal.TryParse(strValue, out var wdpwDecimal))
                             {
-                                workingDaysPerWeek = wdpwInt;
-                            }
-                            else if (double.TryParse(strValue, out var wdpwDouble))
-                            {
-                                workingDaysPerWeek = (int)Math.Round(wdpwDouble);
+                                workingDaysPerWeek = wdpwDecimal;
                             }
                             // For special case values we want to convert to null
                             else if (string.IsNullOrEmpty(strValue) || 
@@ -792,13 +788,10 @@ public class DataImporter
                             {
                                 workingDaysPerWeek = null;
                             }
-                        }
-                        
-                        // Add debug info if parsing fails
-                        if (workingDaysPerWeek == null && !string.IsNullOrEmpty(rawValue) && 
-                            rawValue != "null" && rawValue != "undefined")
-                        {
-                            Warnings.Add($"Could not parse workingDaysPerWeek value: '{rawValue}' of type {valueType}");
+                            else
+                            {
+                                Warnings.Add($"Could not parse workingDaysPerWeek string value: '{strValue}'");
+                            }
                         }
                     }
                     cmd.Parameters.AddWithValue("@workingDaysPerWeek", workingDaysPerWeek ?? (object)DBNull.Value);
@@ -810,41 +803,42 @@ public class DataImporter
                     throw new Exception($"Error with workingDaysPerWeek parameter: {ex.Message} | Value: {valueInfo}", ex);
                 }
 
-                // Base hours
+                // Base hours - IMPROVED TYPE CONVERSION
                 try {
-                    int? baseHours = null;
+                    decimal? baseHours = null;
                     if (jobInfoElement.TryGetProperty("baseHours", out var bhElement))
                     {
-                        // Log the actual type and value for debugging
                         string valueType = bhElement.ValueKind.ToString();
                         string rawValue = bhElement.ToString();
                         
                         if (bhElement.ValueKind == JsonValueKind.Number)
                         {
                             try {
-                                baseHours = bhElement.GetInt32();
+                                // Try as decimal first - handles both integers and decimals
+                                decimal hoursDecimal = bhElement.GetDecimal();
+                                baseHours = hoursDecimal;
                             }
                             catch {
-                                // Try as double first, then convert
+                                // Try as double as fallback
                                 try {
                                     double hoursDouble = bhElement.GetDouble();
-                                    baseHours = (int)Math.Round(hoursDouble);
+                                    if (!double.IsNaN(hoursDouble) && !double.IsInfinity(hoursDouble))
+                                    {
+                                        baseHours = (decimal)hoursDouble;
+                                    }
                                 }
                                 catch {
-                                    // If that fails, ignore
+                                    Warnings.Add($"Could not parse baseHours numeric value: '{rawValue}'");
                                 }
                             }
                         }
                         else if (bhElement.ValueKind == JsonValueKind.String)
                         {
                             string strValue = bhElement.GetString() ?? "";
-                            if (int.TryParse(strValue, out var bhInt))
+                            // Try as decimal first
+                            if (decimal.TryParse(strValue, out var bhDecimal))
                             {
-                                baseHours = bhInt;
-                            }
-                            else if (double.TryParse(strValue, out var bhDouble))
-                            {
-                                baseHours = (int)Math.Round(bhDouble);
+                                baseHours = bhDecimal;
                             }
                             // For special case values we want to convert to null
                             else if (string.IsNullOrEmpty(strValue) || 
@@ -855,13 +849,10 @@ public class DataImporter
                             {
                                 baseHours = null;
                             }
-                        }
-                        
-                        // Add debug info if parsing fails
-                        if (baseHours == null && !string.IsNullOrEmpty(rawValue) && 
-                            rawValue != "null" && rawValue != "undefined")
-                        {
-                            Warnings.Add($"Could not parse baseHours value: '{rawValue}' of type {valueType}");
+                            else
+                            {
+                                Warnings.Add($"Could not parse baseHours string value: '{strValue}'");
+                            }
                         }
                     }
                     cmd.Parameters.AddWithValue("@baseHours", baseHours ?? (object)DBNull.Value);
@@ -1003,35 +994,12 @@ public class DataImporter
                     throw new Exception($"Error with departmentId parameter: {ex.Message}", ex);
                 }
                 
-                // Salary info - THIS IS LIKELY WHERE THE ERRORS ARE OCCURRING
+                // Salary info - IMPROVED TYPE CONVERSION
                 try {
                     decimal? salaryAmount = null;
                     if (jobInfoElement.TryGetProperty("salary", out var salaryElement))
                     {
-                        if (salaryElement.ValueKind == JsonValueKind.Number)
-                        {
-                            try {
-                                salaryAmount = salaryElement.GetDecimal();
-                            }
-                            catch {
-                                // If decimal fails, try double and convert
-                                try {
-                                    double salaryDouble = salaryElement.GetDouble();
-                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
-                                    {
-                                        salaryAmount = Convert.ToDecimal(salaryDouble);
-                                    }
-                                }
-                                catch {
-                                    // If still fails, try string parse
-                                    if (salaryElement.ValueKind == JsonValueKind.String &&
-                                        decimal.TryParse(salaryElement.GetString(), out var salaryDecimal))
-                                    {
-                                        salaryAmount = salaryDecimal;
-                                    }
-                                }
-                            }
-                        }
+                        salaryAmount = SafeParseDecimal(salaryElement, "salary");
                     }
                     cmd.Parameters.AddWithValue("@salaryAmount", salaryAmount ?? (object)DBNull.Value);
                 } catch (Exception ex) {
@@ -1042,152 +1010,60 @@ public class DataImporter
                     throw new Exception($"Error with salaryAmount parameter: {ex.Message} | Value: {salaryValue}", ex);
                 }
                 
-                // Salary Min
+                // Salary Min - IMPROVED TYPE CONVERSION
                 try {
                     decimal? salaryMin = null;
                     if (hasPosition && positionElement.TryGetProperty("salaryMin", out var salMinElement))
                     {
-                        if (salMinElement.ValueKind == JsonValueKind.Number)
-                        {
-                            try {
-                                salaryMin = salMinElement.GetDecimal();
-                            }
-                            catch {
-                                try {
-                                    double salaryDouble = salMinElement.GetDouble();
-                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
-                                    {
-                                        salaryMin = Convert.ToDecimal(salaryDouble);
-                                    }
-                                }
-                                catch {
-                                    if (salMinElement.ValueKind == JsonValueKind.String &&
-                                        decimal.TryParse(salMinElement.GetString(), out var salaryDecimal))
-                                    {
-                                        salaryMin = salaryDecimal;
-                                    }
-                                }
-                            }
-                        }
+                        salaryMin = SafeParseDecimal(salMinElement, "salaryMin");
                     }
                     cmd.Parameters.AddWithValue("@salaryMin", salaryMin ?? (object)DBNull.Value);
                 } catch (Exception ex) {
                     throw new Exception($"Error with salaryMin parameter: {ex.Message}", ex);
                 }
                 
-                // Salary Max
+                // Salary Max - IMPROVED TYPE CONVERSION
                 try {
                     decimal? salaryMax = null;
                     if (hasPosition && positionElement.TryGetProperty("salaryMax", out var salMaxElement))
                     {
-                        if (salMaxElement.ValueKind == JsonValueKind.Number)
-                        {
-                            try {
-                                salaryMax = salMaxElement.GetDecimal();
-                            }
-                            catch {
-                                try {
-                                    double salaryDouble = salMaxElement.GetDouble();
-                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
-                                    {
-                                        salaryMax = Convert.ToDecimal(salaryDouble);
-                                    }
-                                }
-                                catch {
-                                    if (salMaxElement.ValueKind == JsonValueKind.String &&
-                                        decimal.TryParse(salMaxElement.GetString(), out var salaryDecimal))
-                                    {
-                                        salaryMax = salaryDecimal;
-                                    }
-                                }
-                            }
-                        }
+                        salaryMax = SafeParseDecimal(salMaxElement, "salaryMax");
                     }
                     cmd.Parameters.AddWithValue("@salaryMax", salaryMax ?? (object)DBNull.Value);
                 } catch (Exception ex) {
                     throw new Exception($"Error with salaryMax parameter: {ex.Message}", ex);
                 }
                 
-                // Salary Benchmark
+                // Salary Benchmark - IMPROVED TYPE CONVERSION
                 try {
                     decimal? salaryBenchmark = null;
                     if (hasPosition && positionElement.TryGetProperty("salaryAwardBenchmark", out var sabElement))
                     {
-                        if (sabElement.ValueKind == JsonValueKind.Number)
-                        {
-                            try {
-                                salaryBenchmark = sabElement.GetDecimal();
-                            }
-                            catch {
-                                try {
-                                    double salaryDouble = sabElement.GetDouble();
-                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
-                                    {
-                                        salaryBenchmark = Convert.ToDecimal(salaryDouble);
-                                    }
-                                }
-                                catch {
-                                    if (sabElement.ValueKind == JsonValueKind.String &&
-                                        decimal.TryParse(sabElement.GetString(), out var salaryDecimal))
-                                    {
-                                        salaryBenchmark = salaryDecimal;
-                                    }
-                                }
-                            }
-                        }
+                        salaryBenchmark = SafeParseDecimal(sabElement, "salaryAwardBenchmark");
                     }
                     cmd.Parameters.AddWithValue("@salaryBenchmark", salaryBenchmark ?? (object)DBNull.Value);
                 } catch (Exception ex) {
                     throw new Exception($"Error with salaryBenchmark parameter: {ex.Message}", ex);
                 }
                 
-                // Discretionary Allowance
+                // Discretionary Allowance - IMPROVED TYPE CONVERSION
                 try {
                     decimal? discretionaryAllowance = null;
                     if (jobInfoElement.TryGetProperty("discretionaryAllowance", out var daElement))
                     {
-                        if (daElement.ValueKind == JsonValueKind.Number)
-                        {
-                            try {
-                                discretionaryAllowance = daElement.GetDecimal();
-                            }
-                            catch {
-                                try {
-                                    double allowanceDouble = daElement.GetDouble();
-                                    if (!double.IsNaN(allowanceDouble) && !double.IsInfinity(allowanceDouble))
-                                    {
-                                        discretionaryAllowance = Convert.ToDecimal(allowanceDouble);
-                                    }
-                                }
-                                catch {
-                                    if (daElement.ValueKind == JsonValueKind.String &&
-                                        decimal.TryParse(daElement.GetString(), out var allowanceDecimal))
-                                    {
-                                        discretionaryAllowance = allowanceDecimal;
-                                    }
-                                }
-                            }
-                        }
+                        discretionaryAllowance = SafeParseDecimal(daElement, "discretionaryAllowance");
                     }
                     cmd.Parameters.AddWithValue("@discretionaryAllowance", discretionaryAllowance ?? (object)DBNull.Value);
                 } catch (Exception ex) {
                     throw new Exception($"Error with discretionaryAllowance parameter: {ex.Message}", ex);
                 }
                 
-                // STI Target
+                // STI Target - IMPROVED TYPE CONVERSION
                 try {
                     int? stiTarget = null;
                     if (hasPosition && positionElement.TryGetProperty("stiTarget", out var stiElement))
                     {
-                        if (stiElement.ValueKind == JsonValueKind.Number)
-                        {
-                            stiTarget = stiElement.GetInt32();
-                        }
-                        else if (stiElement.ValueKind == JsonValueKind.String && 
-                                int.TryParse(stiElement.GetString(), out var stiInt))
-                        {
-                            stiTarget = stiInt;
-                        }
+                        stiTarget = SafeParseInt32(stiElement, "stiTarget", null);
                     }
                     cmd.Parameters.AddWithValue("@stiTarget", stiTarget ?? (object)DBNull.Value);
                 } catch (Exception ex) {
@@ -1247,17 +1123,12 @@ public class DataImporter
                     throw new Exception($"Error with managerPositionTitle parameter: {ex.Message}", ex);
                 }
                 
-                // Dates - THIS COULD ALSO BE WHERE ERRORS OCCUR
+                // Dates - IMPROVED DATE PARSING
                 try {
                     DateTime? startDate = null;
-                    if (jobInfoElement.TryGetProperty("startDate", out var startDateElement) && 
-                        startDateElement.ValueKind == JsonValueKind.String)
+                    if (jobInfoElement.TryGetProperty("startDate", out var startDateElement))
                     {
-                        string dateStr = startDateElement.GetString() ?? "";
-                        if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var date))
-                        {
-                            startDate = date;
-                        }
+                        startDate = SafeParseDateTime(startDateElement, "startDate");
                     }
                     
                     cmd.Parameters.AddWithValue("@startDate", startDate ?? (object)DBNull.Value);
@@ -1267,14 +1138,9 @@ public class DataImporter
                 
                 try {
                     DateTime? endDate = null;
-                    if (jobInfoElement.TryGetProperty("endDate", out var endDateElement) && 
-                        endDateElement.ValueKind == JsonValueKind.String)
+                    if (jobInfoElement.TryGetProperty("endDate", out var endDateElement))
                     {
-                        string dateStr = endDateElement.GetString() ?? "";
-                        if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var date))
-                        {
-                            endDate = date;
-                        }
+                        endDate = SafeParseDateTime(endDateElement, "endDate");
                     }
                     
                     cmd.Parameters.AddWithValue("@endDate", endDate ?? (object)DBNull.Value);
@@ -1386,7 +1252,7 @@ public class DataImporter
         {
             // Delete existing contract for this movement and type
             await using var deleteContractCmd = new NpgsqlCommand(
-                "DELETE FROM movement_data.contracts WHERE movement_id = @movementId AND is_current = @isCurrent", conn);
+                "DELETE FROM team_movements.contracts WHERE movement_id = @movementId AND is_current = @isCurrent", conn);
             deleteContractCmd.Parameters.AddWithValue("@movementId", movementId);
             deleteContractCmd.Parameters.AddWithValue("@isCurrent", isCurrent);
             await deleteContractCmd.ExecuteNonQueryAsync();
@@ -1397,7 +1263,7 @@ public class DataImporter
             {
                 // Insert contract
                 await using var insertContractCmd = new NpgsqlCommand(@"
-                    INSERT INTO movement_data.contracts (
+                    INSERT INTO team_movements.contracts (
                         movement_id,
                         is_current
                     ) VALUES (
@@ -1428,7 +1294,7 @@ public class DataImporter
                             try
                             {
                                 await using var insertFlagCmd = new NpgsqlCommand(@"
-                                    INSERT INTO movement_data.contract_mutual_flags (
+                                    INSERT INTO team_movements.contract_mutual_flags (
                                         contract_id,
                                         flag_id
                                     ) VALUES (
@@ -1462,7 +1328,7 @@ public class DataImporter
                             {
                                 // Insert week
                                 await using var insertWeekCmd = new NpgsqlCommand(@"
-                                    INSERT INTO movement_data.contract_weeks (
+                                    INSERT INTO team_movements.contract_weeks (
                                         contract_id,
                                         week_index
                                     ) VALUES (
@@ -1504,7 +1370,7 @@ public class DataImporter
                                                     
                                                     // Insert daily schedule with safe time parsing
                                                     await using var insertScheduleCmd = new NpgsqlCommand(@"
-                                                        INSERT INTO movement_data.daily_schedules (
+                                                        INSERT INTO team_movements.daily_schedules (
                                                             contract_week_id,
                                                             day_of_week,
                                                             start_time,
@@ -1541,7 +1407,7 @@ public class DataImporter
                                                                     int breakTypeId = GetLookupId("break_types", breakType);
                                                                     
                                                                     await using var insertBreakCmd = new NpgsqlCommand(@"
-                                                                        INSERT INTO movement_data.schedule_breaks (
+                                                                        INSERT INTO team_movements.schedule_breaks (
                                                                             daily_schedule_id,
                                                                             break_type_id
                                                                         ) VALUES (
@@ -1593,7 +1459,7 @@ public class DataImporter
     {
         // Delete existing history events for this movement
         await using var deleteCmd = new NpgsqlCommand(
-            "DELETE FROM movement_data.history_events WHERE movement_id = @movementId", conn);
+            "DELETE FROM team_movements.history_events WHERE movement_id = @movementId", conn);
         deleteCmd.Parameters.AddWithValue("@movementId", movementId);
         await deleteCmd.ExecuteNonQueryAsync();
         
@@ -1615,14 +1481,11 @@ public class DataImporter
                         var eventData = eventProperty.Value;
                         if (eventData.ValueKind == JsonValueKind.Object)
                         {
+                            // Improved date parsing
                             DateTime? createdDate = null;
-                            if (eventData.TryGetProperty("createdDate", out var cdElement) && 
-                                cdElement.ValueKind == JsonValueKind.String)
+                            if (eventData.TryGetProperty("createdDate", out var cdElement))
                             {
-                                if (DateTime.TryParse(cdElement.GetString(), out var date))
-                                {
-                                    createdDate = date;
-                                }
+                                createdDate = SafeParseDateTime(cdElement, "history.createdDate");
                             }
                             
                             string createdBy = eventData.TryGetProperty("createdBy", out var cbElement) && 
@@ -1680,7 +1543,7 @@ public class DataImporter
                             
                             // Insert history event
                             await using var insertCmd = new NpgsqlCommand(@"
-                                INSERT INTO movement_data.history_events (
+                                INSERT INTO team_movements.history_events (
                                     movement_id,
                                     event_type_id,
                                     event_index,
@@ -1745,7 +1608,7 @@ public class DataImporter
     {
         // Delete existing tags for this movement
         await using var deleteCmd = new NpgsqlCommand(
-            "DELETE FROM movement_data.tags WHERE movement_id = @movementId", conn);
+            "DELETE FROM team_movements.tags WHERE movement_id = @movementId", conn);
         deleteCmd.Parameters.AddWithValue("@movementId", movementId);
         await deleteCmd.ExecuteNonQueryAsync();
         
@@ -1761,7 +1624,7 @@ public class DataImporter
                     if (!string.IsNullOrEmpty(tagValue))
                     {
                         await using var insertCmd = new NpgsqlCommand(@"
-                            INSERT INTO movement_data.tags (
+                            INSERT INTO team_movements.tags (
                                 movement_id,
                                 tag_value
                             ) VALUES (
@@ -1791,5 +1654,254 @@ public class DataImporter
         
         // If not in cache, return the ID for 'Unknown'
         return _lookupCache[$"{tableName}:Unknown"];
+    }
+    
+    // NEW HELPER METHODS FOR SAFER TYPE CONVERSION
+    
+    private DateTime? SafeParseDateTime(JsonElement element, string fieldName)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            string dateString = element.GetString() ?? "";
+            if (string.IsNullOrEmpty(dateString) ||
+                dateString.Equals("null", StringComparison.OrdinalIgnoreCase) ||
+                dateString.Equals("undefined", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+            
+            if (DateTime.TryParse(dateString, out var date))
+            {
+                return date;
+            }
+            
+            // Try multiple date formats
+            string[] formats = { 
+                "yyyy-MM-dd", "MM/dd/yyyy", "dd/MM/yyyy", 
+                "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHH:mm:ssZ",
+                "yyyy/MM/dd", "dd-MM-yyyy", "MM-dd-yyyy" 
+            };
+            
+            if (DateTime.TryParseExact(dateString, formats, 
+                System.Globalization.CultureInfo.InvariantCulture, 
+                System.Globalization.DateTimeStyles.None, out var parsedDate))
+            {
+                return parsedDate;
+            }
+            
+            // Log failed parsing 
+            Warnings.Add($"Failed to parse {fieldName} date: '{dateString}'");
+        }
+        else if (element.ValueKind == JsonValueKind.Number)
+        {
+            try
+            {
+                // Try parsing as Unix timestamp (milliseconds since epoch)
+                long timestamp = element.GetInt64();
+                DateTime dateTime = DateTimeOffset.FromUnixTimeMilliseconds(timestamp).DateTime;
+                return dateTime;
+            }
+            catch
+            {
+                Warnings.Add($"Failed to parse {fieldName} numeric timestamp: {element}");
+            }
+        }
+        
+        return null;
+    }
+    
+    private decimal? SafeParseDecimal(JsonElement element, string fieldName)
+    {
+        try
+        {
+            if (element.ValueKind == JsonValueKind.Number)
+            {
+                try
+                {
+                    // Try as decimal first
+                    return element.GetDecimal();
+                }
+                catch
+                {
+                    // Try as double and convert
+                    try
+                    {
+                        double doubleValue = element.GetDouble();
+                        if (!double.IsNaN(doubleValue) && !double.IsInfinity(doubleValue))
+                        {
+                            return (decimal)doubleValue;
+                        }
+                    }
+                    catch
+                    {
+                        // Last ditch attempt - stringify and parse
+                        string strValue = element.ToString();
+                        if (decimal.TryParse(strValue, out var decimalValue))
+                        {
+                            return decimalValue;
+                        }
+                    }
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.String)
+            {
+                string strValue = element.GetString() ?? "";
+                
+                // Special cases
+                if (string.IsNullOrEmpty(strValue) ||
+                    strValue.Equals("null", StringComparison.OrdinalIgnoreCase) ||
+                    strValue.Equals("undefined", StringComparison.OrdinalIgnoreCase) ||
+                    strValue.Equals("NA", StringComparison.OrdinalIgnoreCase) ||
+                    strValue.Equals("N/A", StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+                
+                // Handle currency symbols and number formatting
+                string cleanValue = strValue
+                    .Replace("$", "")
+                    .Replace("€", "")
+                    .Replace("£", "")
+                    .Replace(",", "")
+                    .Trim();
+                
+                if (decimal.TryParse(cleanValue, out var result))
+                {
+                    return result;
+                }
+            }
+            
+            // Log the value that couldn't be parsed
+            Warnings.Add($"Could not parse {fieldName} value: '{element}'");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"Error parsing {fieldName}: {ex.Message}");
+            return null;
+        }
+    }
+    
+    private int? SafeParseInt32(JsonElement element, string fieldName, int? defaultValue)
+    {
+        try
+        {
+            if (element.ValueKind == JsonValueKind.Number)
+            {
+                try
+                {
+                    // Try as int first
+                    return element.GetInt32();
+                }
+                catch
+                {
+                    // Try as double and convert
+                    try
+                    {
+                        double doubleValue = element.GetDouble();
+                        if (!double.IsNaN(doubleValue) && !double.IsInfinity(doubleValue))
+                        {
+                            return (int)Math.Round(doubleValue);
+                        }
+                    }
+                    catch
+                    {
+                        // Last ditch attempt - stringify and parse
+                        string strValue = element.ToString();
+                        if (int.TryParse(strValue, out var intValue))
+                        {
+                            return intValue;
+                        }
+                    }
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.String)
+            {
+                string strValue = element.GetString() ?? "";
+                
+                // Special cases
+                if (string.IsNullOrEmpty(strValue) ||
+                    strValue.Equals("null", StringComparison.OrdinalIgnoreCase) ||
+                    strValue.Equals("undefined", StringComparison.OrdinalIgnoreCase) ||
+                    strValue.Equals("NA", StringComparison.OrdinalIgnoreCase) ||
+                    strValue.Equals("N/A", StringComparison.OrdinalIgnoreCase))
+                {
+                    return defaultValue;
+                }
+                
+                // Handle common formatting
+                string cleanValue = strValue
+                    .Replace(",", "")
+                    .Trim();
+                
+                if (int.TryParse(cleanValue, out var intResult))
+                {
+                    return intResult;
+                }
+                
+                // Try decimal conversion
+                if (decimal.TryParse(cleanValue, out var decimalResult))
+                {
+                    return (int)Math.Round(decimalResult);
+                }
+            }
+            
+            // Log the value that couldn't be parsed
+            Warnings.Add($"Could not parse {fieldName} value as integer: '{element}'");
+            return defaultValue;
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"Error parsing {fieldName} as integer: {ex.Message}");
+            return defaultValue;
+        }
+    }
+    
+    private bool SafeParseBool(JsonElement element, string fieldName, bool defaultValue)
+    {
+        try
+        {
+            if (element.ValueKind == JsonValueKind.True)
+            {
+                return true;
+            }
+            else if (element.ValueKind == JsonValueKind.False)
+            {
+                return false;
+            }
+            else if (element.ValueKind == JsonValueKind.String)
+            {
+                string strValue = element.GetString() ?? "";
+                
+                // Common string boolean representations
+                if (string.Equals(strValue, "true", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(strValue, "yes", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(strValue, "1", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(strValue, "y", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+                else if (string.Equals(strValue, "false", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(strValue, "no", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(strValue, "0", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(strValue, "n", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Number)
+            {
+                int intValue = element.GetInt32();
+                return intValue != 0;
+            }
+            
+            // Default case
+            return defaultValue;
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"Error parsing {fieldName} as boolean: {ex.Message}");
+            return defaultValue;
+        }
     }
 }

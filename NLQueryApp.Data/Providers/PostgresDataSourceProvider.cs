@@ -40,6 +40,8 @@ public class PostgresDataSourceProvider : IDataSourceProvider
                 includedSchemas = schemasList;
         }
         
+        Console.WriteLine($"includedSchemas: {includedSchemas}");
+        
         var excludedTables = Array.Empty<string>();
         
         // Check if there are specifically excluded tables in connection parameters

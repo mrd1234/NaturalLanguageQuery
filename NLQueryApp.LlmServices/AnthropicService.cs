@@ -30,59 +30,74 @@ public class AnthropicService : ILlmService
 
     public async Task<LlmQueryResponse> GenerateSqlQueryAsync(LlmQueryRequest request)
     {
-        var systemPrompt = CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
+        var systemPrompt = SystemPrompt.CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
         var userPrompt = CreateUserPrompt(request);
-        
+    
         var messages = new List<object>
         {
             new { role = "system", content = systemPrompt },
             new { role = "user", content = userPrompt }
         };
-        
+    
         var requestData = new
         {
             model = _model,
             messages,
             max_tokens = 4000,
-            temperature = 0.0
+            temperature = 0.0,
+            response_format = new { type = "json_object" }
         };
-        
+    
         var response = await _httpClient.PostAsJsonAsync("messages", requestData);
         response.EnsureSuccessStatusCode();
-        
+    
         var responseObject = await response.Content.ReadFromJsonAsync<JsonElement>();
         var content = responseObject.GetProperty("content").GetProperty("0").GetProperty("text").GetString();
-        
-        return ParseLlmResponse(content, request.DataSourceType);
+    
+        // Parse the JSON response
+        return JsonSerializer.Deserialize<LlmQueryResponse>(content, new JsonSerializerOptions 
+        { 
+            PropertyNameCaseInsensitive = true 
+        });
     }
     
-    private string CreateSystemPrompt(string databaseSchema, string schemaContext, string dataSourceType)
-    {
-        var queryLanguage = GetQueryLanguage(dataSourceType);
-        
-        return @$"
-You are an expert query generator for {dataSourceType} databases. Your task is to convert natural language questions into valid {queryLanguage} queries.
-
-Here is the database schema you'll be working with:
-
-{databaseSchema}
-
-## Additional Context About This Schema
-
-{schemaContext}
-
-Important rules:
-1. Only generate READ-ONLY queries - no INSERT, UPDATE, DELETE, or other modifying statements.
-2. Always wrap the query in triple backticks (```{queryLanguage}) for clear identification.
-3. Provide a brief explanation of your query logic after the query.
-4. Use standard {dataSourceType} syntax and features.
-5. If you receive an error from a previous query attempt, analyze it carefully and fix the issue.
-6. Always return your answer in JSON format with two fields: 'sqlQuery' and 'explanation'.
-7. Make the query as efficient as possible.
-8. Use appropriate joins when necessary and ensure condition columns match types.
-9. Do not use functions or features not available in {dataSourceType}.
-";
-    }
+//     private string CreateSystemPrompt(string databaseSchema, string schemaContext, string dataSourceType)
+//     {
+//         var queryLanguage = GetQueryLanguage(dataSourceType);
+//     
+//         return @$"
+// You are an expert query generator for {dataSourceType} databases. Your task is to convert natural language questions into valid {queryLanguage} queries.
+//
+// Here is the database schema you'll be working with:
+//
+// {databaseSchema}
+//
+// ## Additional Context About This Schema
+//
+// {schemaContext}
+//
+// Important rules:
+// 1. Only generate READ-ONLY queries - no INSERT, UPDATE, DELETE, or other modifying statements.
+// 2. Always wrap the query in triple backticks (```{queryLanguage}) for clear identification.
+// 3. Provide a brief explanation of your query logic after the query.
+// 4. Use standard {dataSourceType} syntax and features.
+// 5. If you receive an error from a previous query attempt, analyze it carefully and fix the issue.
+// 6. Always return your answer in JSON format with two fields: 'sqlQuery' and 'explanation'.
+// 7. Make the query as efficient as possible.
+// 8. Use appropriate joins when necessary and ensure condition columns match types.
+// 9. Do not use functions or features not available in {dataSourceType}.
+//
+// CRITICAL: When using table aliases, ALWAYS use column names exactly as specified in the schema.
+// For example, use mt.type_name (NOT mt.name or mt.movement_type) when querying from movement_types.
+//
+// CRITICALLY IMPORTANT: 
+// - 'team_movements' is a SCHEMA name, NOT a table name
+// - All tables are in the team_movements schema
+// - Always use team_movements.table_name in your SQL queries
+// - For example: FROM team_movements.movement_types mt
+// - NEVER use FROM team_movements mt (this is incorrect)
+// ";
+//     }
     
     private string CreateUserPrompt(LlmQueryRequest request)
     {

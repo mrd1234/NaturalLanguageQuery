@@ -415,19 +415,19 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
                 DROP TABLE IF EXISTS team_movements.employee;
                 DROP TABLE IF EXISTS team_movements.position;
                 
-                DROP TABLE IF EXISTS lookup.history_event_type;
-                DROP TABLE IF EXISTS lookup.break_type;
-                DROP TABLE IF EXISTS lookup.mutual_flag;
-                DROP TABLE IF EXISTS lookup.job_role;
-                DROP TABLE IF EXISTS lookup.role_type;
-                DROP TABLE IF EXISTS lookup.cost_centre;
-                DROP TABLE IF EXISTS lookup.department;
-                DROP TABLE IF EXISTS lookup.brand;
-                DROP TABLE IF EXISTS lookup.banner;
-                DROP TABLE IF EXISTS lookup.employee_subgroup;
-                DROP TABLE IF EXISTS lookup.employee_group;
-                DROP TABLE IF EXISTS lookup.movement_type;
-                DROP TABLE IF EXISTS lookup.movement_status;
+                DROP TABLE IF EXISTS team_movements.history_event_type;
+                DROP TABLE IF EXISTS team_movements.break_type;
+                DROP TABLE IF EXISTS team_movements.mutual_flag;
+                DROP TABLE IF EXISTS team_movements.job_role;
+                DROP TABLE IF EXISTS team_movements.role_type;
+                DROP TABLE IF EXISTS team_movements.cost_centre;
+                DROP TABLE IF EXISTS team_movements.department;
+                DROP TABLE IF EXISTS team_movements.brand;
+                DROP TABLE IF EXISTS team_movements.banner;
+                DROP TABLE IF EXISTS team_movements.employee_subgroup;
+                DROP TABLE IF EXISTS team_movements.employee_group;
+                DROP TABLE IF EXISTS team_movements.movement_type;
+                DROP TABLE IF EXISTS team_movements.movement_status;
             ", connection);
             
             await dropTablesCommand.ExecuteNonQueryAsync();
@@ -447,7 +447,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
     {
         // Insert movement statuses
         await using var statusCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.movement_status (status_name)
+            INSERT INTO team_movements.movement_status (status_name)
             VALUES ('Completed'), ('Expired'), ('Rejected')
             ON CONFLICT (status_name) DO NOTHING;
         ", connection);
@@ -456,7 +456,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert movement types
         await using var typeCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.movement_type (type_name)
+            INSERT INTO team_movements.movement_type (type_name)
             VALUES 
                 ('ContractAndPositionPermanent'), 
                 ('ContractAndPositionSecondment'),
@@ -469,7 +469,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert employee groups
         await using var groupCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.employee_group (group_name)
+            INSERT INTO team_movements.employee_group (group_name)
             VALUES ('FullTime'), ('PartTime'), ('Casual')
             ON CONFLICT (group_name) DO NOTHING;
         ", connection);
@@ -478,7 +478,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert employee subgroups
         await using var subgroupCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.employee_subgroup (subgroup_name)
+            INSERT INTO team_movements.employee_subgroup (subgroup_name)
             VALUES ('Salaried'), ('EnterpriseAgreement'), ('Unknown')
             ON CONFLICT (subgroup_name) DO NOTHING;
         ", connection);
@@ -487,7 +487,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert banners
         await using var bannerCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.banner (banner_name)
+            INSERT INTO team_movements.banner (banner_name)
             VALUES ('FoodGroup'), ('BigW'), ('ProactiveServices'), ('Unknown')
             ON CONFLICT (banner_name) DO NOTHING;
         ", connection);
@@ -496,7 +496,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert role types
         await using var roleCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.role_type (role_name)
+            INSERT INTO team_movements.role_type (role_name)
             VALUES 
                 ('TeamMember'), 
                 ('SendingManager'), 
@@ -512,7 +512,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert mutual flags
         await using var flagCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.mutual_flag (flag_name)
+            INSERT INTO team_movements.mutual_flag (flag_name)
             VALUES 
                 ('OutsideOrdinaryHours'), 
                 ('NonConsecutiveDaysOff'),
@@ -527,7 +527,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert break types
         await using var breakCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.break_type (break_name)
+            INSERT INTO team_movements.break_type (break_name)
             VALUES 
                 ('Unpaid30Mins'), 
                 ('Unpaid60Mins'),
@@ -539,7 +539,7 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         // Insert history event types
         await using var eventCommand = new NpgsqlCommand(@"
-            INSERT INTO lookup.history_event_type (event_type_name)
+            INSERT INTO team_movements.history_event_type (event_type_name)
             VALUES 
                 ('MovementInitiated'), 
                 ('MovementEdited'),
