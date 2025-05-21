@@ -1,0 +1,1795 @@
+﻿using System.Collections.Concurrent;
+using System.Text.Json;
+using Npgsql;
+using NpgsqlTypes;
+
+namespace NLQueryApp.Api.Controllers.Import;
+
+public class DataImporter
+{
+    private readonly string _connectionString;
+    private readonly ConcurrentDictionary<string, int> _lookupCache = new();
+    private int _importedCount = 0;
+    private int _errorCount = 0;
+    private readonly ConcurrentBag<string> _processingErrors = new();
+    
+    // New properties for improved error reporting
+    public int ImportedCount => _importedCount;
+    public int ErrorCount => _errorCount;
+    public IReadOnlyCollection<string> ProcessingErrors => _processingErrors;
+    public List<string> Warnings { get; } = new List<string>();
+    
+    public DataImporter(string connectionString)
+    {
+        _connectionString = connectionString;
+    }
+    
+    public async Task ImportData(string directoryPath, SchemaAnalyzer analyzer)
+    {
+        // Find all matching files recursively
+        var files = Directory.GetFiles(directoryPath, "tms_team_movements_team_movement_*.json", 
+            SearchOption.AllDirectories);
+        
+        Console.WriteLine($"Found {files.Length} team movement files to import");
+        
+        // Preload lookup tables into cache for performance
+        await PreloadLookups();
+        
+        // Process files in batches
+        var batchSize = 20;
+        for (var i = 0; i < files.Length; i += batchSize)
+        {
+            var currentBatch = files.Skip(i).Take(batchSize).ToArray();
+            
+            // Import batch of files
+            await Parallel.ForEachAsync(
+                currentBatch,
+                new ParallelOptions { MaxDegreeOfParallelism = 1 }, // Reduced parallelism to avoid issues
+                async (file, token) =>
+                {
+                    await ImportFile(file);
+                });
+            
+            if ((i + batchSize) % 100 == 0 || (i + batchSize) >= files.Length)
+            {
+                Console.WriteLine($"Imported {_importedCount} of {files.Length} files with {_errorCount} errors");
+            }
+        }
+        
+        Console.WriteLine($"Import complete: {_importedCount} files imported with {_errorCount} errors");
+    }
+    
+    public async Task<ImportResults> VerifyImportResults()
+    {
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        
+        var results = new ImportResults
+        {
+            FilesProcessed = _importedCount,
+            ErrorCount = _errorCount
+        };
+        
+        try
+        {
+            await using var cmd1 = new NpgsqlCommand(
+                "SELECT COUNT(*) FROM movement_data.movements", conn);
+            var movementResult = await cmd1.ExecuteScalarAsync();
+            results.MovementsCount = movementResult != null ? Convert.ToInt32(movementResult) : 0;
+            
+            await using var cmd2 = new NpgsqlCommand(
+                "SELECT COUNT(*) FROM movement_data.participants", conn);
+            var participantResult = await cmd2.ExecuteScalarAsync();
+            results.ParticipantsCount = participantResult != null ? Convert.ToInt32(participantResult) : 0;
+        }
+        catch (Exception ex)
+        {
+            results.VerificationError = ex.Message;
+        }
+        
+        return results;
+    }
+    
+    private async Task PreloadLookups()
+    {
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        
+        await PreloadLookup(conn, "movement_types", "id", "type_name");
+        await PreloadLookup(conn, "statuses", "id", "status_name");
+        await PreloadLookup(conn, "employee_groups", "id", "group_name");
+        await PreloadLookup(conn, "employee_subgroups", "id", "subgroup_name");
+        await PreloadLookup(conn, "banners", "id", "banner_name");
+        await PreloadLookup(conn, "brands", "id", "brand_code");
+        await PreloadLookup(conn, "business_groups", "id", "group_code");
+        await PreloadLookup(conn, "departments", "id", "department_code");
+        await PreloadLookup(conn, "cost_centres", "id", "cost_centre_code");
+        await PreloadLookup(conn, "participant_roles", "id", "role_name");
+        await PreloadLookup(conn, "job_roles", "id", "role_name");
+        await PreloadLookup(conn, "mutual_flags", "id", "flag_name");
+        await PreloadLookup(conn, "break_types", "id", "break_name");
+        await PreloadLookup(conn, "history_event_types", "id", "event_type_name");
+    }
+    
+    private async Task PreloadLookup(NpgsqlConnection conn, string tableName, string idColumn, string valueColumn)
+    {
+        await using var cmd = new NpgsqlCommand($"SELECT {idColumn}, {valueColumn} FROM lookup.{tableName}", conn);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        
+        while (await reader.ReadAsync())
+        {
+            var id = reader.GetInt32(0);
+            var value = reader.GetString(1);
+            _lookupCache[$"{tableName}:{value}"] = id;
+        }
+    }
+    
+    private TimeSpan SafeParseTimeSpan(string timeString)
+    {
+        if (string.IsNullOrEmpty(timeString))
+            return TimeSpan.Zero;
+    
+        try
+        {
+            // Standard TimeSpan format (hh:mm or hh:mm:ss)
+            if (TimeSpan.TryParse(timeString, out var result))
+                return result;
+        
+            // Try 24-hour format (military time)
+            if (timeString.Length == 4 && int.TryParse(timeString, out int militaryTime))
+            {
+                int hours = militaryTime / 100;
+                int minutes = militaryTime % 100;
+            
+                if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60)
+                    return new TimeSpan(hours, minutes, 0);
+            }
+        
+            // Try DateTime format
+            if (DateTime.TryParse(timeString, out var dateTime))
+                return dateTime.TimeOfDay;
+        
+            // Try custom formats
+            string[] formats = { "h:mm tt", "hh:mm tt", "H:mm", "HH:mm", "H.mm", "HH.mm" };
+            if (DateTime.TryParseExact(timeString, formats, null, System.Globalization.DateTimeStyles.None, out var parsedDateTime))
+                return parsedDateTime.TimeOfDay;
+        
+            // If nothing works, log and return default
+            Warnings.Add($"Could not parse time string '{timeString}', using default 00:00");
+            return TimeSpan.Zero;
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"Error parsing time string '{timeString}': {ex.Message}");
+            return TimeSpan.Zero;
+        }
+    }
+    
+    private async Task ImportFile(string filePath)
+    {
+        try
+        {
+            var json = await File.ReadAllTextAsync(filePath);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            
+            await using var conn = new NpgsqlConnection(_connectionString);
+            await conn.OpenAsync();
+            
+            // Start a transaction with explicit isolation level
+            await using var transaction = await conn.BeginTransactionAsync(
+                System.Data.IsolationLevel.ReadCommitted);
+            
+            try
+            {
+                // Import movement
+                int movementId;
+                try
+                {
+                    movementId = await ImportMovement(conn, root);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing movement: {ex.Message}", ex);
+                }
+                
+                try
+                {
+                    // Import participants
+                    await ImportParticipants(conn, root, movementId);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing participants: {ex.Message}", ex);
+                }
+                
+                try
+                {
+                    // Import current job info
+                    await ImportJobInfo(conn, root, movementId, "currentJobInfo", true);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing currentJobInfo: {ex.Message}", ex);
+                }
+                
+                try
+                {
+                    // Import new job info
+                    await ImportJobInfo(conn, root, movementId, "newJobInfo", false);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing newJobInfo: {ex.Message}", ex);
+                }
+                
+                try
+                {
+                    // Import current contract
+                    await ImportContract(conn, root, movementId, "currentContract", true);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing currentContract: {ex.Message}", ex);
+                }
+                
+                try
+                {
+                    // Import new contract
+                    await ImportContract(conn, root, movementId, "newContract", false);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing newContract: {ex.Message}", ex);
+                }
+                
+                try
+                {
+                    // Import history
+                    await ImportHistory(conn, root, movementId);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing history: {ex.Message}", ex);
+                }
+                
+                try
+                {
+                    // Import tags
+                    await ImportTags(conn, root, movementId);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception($"Error importing tags: {ex.Message}", ex);
+                }
+                
+                // Commit transaction
+                await transaction.CommitAsync();
+                
+                // Only increment after successful commit
+                Interlocked.Increment(ref _importedCount);
+                Console.WriteLine($"Successfully imported: {Path.GetFileName(filePath)}");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                throw new Exception($"Failed to import file: {ex.Message}", ex);
+            }
+        }
+        catch (JsonException jex)
+        {
+            Interlocked.Increment(ref _errorCount);
+            string fileName = Path.GetFileName(filePath);
+            string movementId = ExtractMovementIdFromFileName(fileName);
+            Console.WriteLine($"Error parsing JSON in file {fileName} (MovementID: {movementId}): {jex.Message}");
+            
+            // Log more details if needed
+            LogDetailedError(filePath, "JSON_PARSE_ERROR", jex.Message, jex);
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Increment(ref _errorCount);
+            string fileName = Path.GetFileName(filePath);
+            string movementId = ExtractMovementIdFromFileName(fileName);
+            
+            // Unwrap nested exceptions to get to the root cause
+            Exception innermost = ex;
+            while (innermost.InnerException != null)
+            {
+                innermost = innermost.InnerException;
+            }
+            
+            Console.WriteLine($"Error importing {fileName} (MovementID: {movementId}): {ex.Message}");
+            Console.WriteLine($"Root cause: {innermost.Message}");
+            
+            // Add to the errors collection
+            _processingErrors.Add($"{fileName}: {innermost.Message}");
+            
+            // Log the full exception details to a file for deeper analysis
+            LogDetailedError(filePath, "IMPORT_ERROR", innermost.Message, ex);
+        }
+    }
+
+    private string ExtractMovementIdFromFileName(string fileName)
+    {
+        // Filename format is typically: tms_team_movements_team_movement_[MOVEMENT_ID]_[TIMESTAMP].json
+        try
+        {
+            string noExtension = Path.GetFileNameWithoutExtension(fileName);
+            string[] parts = noExtension.Split('_');
+            if (parts.Length >= 6)
+            {
+                return parts[5]; // The movement ID should be the 6th part (index 5)
+            }
+        }
+        catch
+        {
+            // Ignore parsing errors, just return empty if we can't extract
+        }
+        return "";
+    }
+
+    private void LogDetailedError(string filePath, string errorType, string errorMessage, Exception ex)
+    {
+        try
+        {
+            string logDir = "import_errors";
+            Directory.CreateDirectory(logDir);
+            
+            string fileName = Path.GetFileName(filePath);
+            string logFile = Path.Combine(logDir, $"{fileName}_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+            
+            using var writer = new StreamWriter(logFile);
+            writer.WriteLine($"Error Type: {errorType}");
+            writer.WriteLine($"Timestamp: {DateTime.Now}");
+            writer.WriteLine($"File: {filePath}");
+            writer.WriteLine($"Error Message: {errorMessage}");
+            writer.WriteLine();
+            writer.WriteLine("Exception Details:");
+            writer.WriteLine(ex.ToString());
+            
+            // If it's a database error, try to log additional details
+            if (ex is PostgresException pgEx)
+            {
+                writer.WriteLine();
+                writer.WriteLine("PostgreSQL Error Details:");
+                writer.WriteLine($"Error Code: {pgEx.SqlState}");
+                writer.WriteLine($"Constraint: {pgEx.ConstraintName}");
+                writer.WriteLine($"Detail: {pgEx.Detail}");
+                writer.WriteLine($"Column: {pgEx.ColumnName}");
+                writer.WriteLine($"Table: {pgEx.TableName}");
+                writer.WriteLine($"Line: {pgEx.Line}, Position: {pgEx.Position}");
+            }
+            
+            // Try to include a sample of the file content
+            try
+            {
+                writer.WriteLine();
+                writer.WriteLine("File Sample (first 2000 chars):");
+                string content = File.ReadAllText(filePath);
+                writer.WriteLine(content.Length > 2000 ? content.Substring(0, 2000) + "..." : content);
+            }
+            catch
+            {
+                writer.WriteLine("Could not read file content for logging.");
+            }
+        }
+        catch
+        {
+            // If logging fails, continue - we don't want to interrupt the import process
+            Console.WriteLine("Warning: Failed to write detailed error log.");
+        }
+    }
+    
+    private async Task<int> ImportMovement(NpgsqlConnection conn, JsonElement root)
+    {
+        string movementId = root.GetProperty("movementId").GetString() ?? 
+                            throw new Exception("Movement ID is required");
+        
+        string employeeId = root.GetProperty("employeeId").GetString() ?? "Unknown";
+        
+        int movementTypeId = GetLookupId(
+            "movement_types", 
+            root.TryGetProperty("movementType", out var movementTypeElement) && 
+            movementTypeElement.ValueKind == JsonValueKind.String
+                ? movementTypeElement.GetString() ?? "Unknown"
+                : "Unknown"
+        );
+        
+        int statusId = GetLookupId(
+            "statuses", 
+            root.TryGetProperty("status", out var statusElement) && 
+            statusElement.ValueKind == JsonValueKind.String
+                ? statusElement.GetString() ?? "Unknown"
+                : "Unknown"
+        );
+        
+        DateTime? startDate = null;
+        if (root.TryGetProperty("startDate", out var startDateElement) && 
+            startDateElement.ValueKind == JsonValueKind.String)
+        {
+            if (DateTime.TryParse(startDateElement.GetString(), out var date))
+            {
+                startDate = date;
+            }
+        }
+        
+        DateTime? endDate = null;
+        if (root.TryGetProperty("endDate", out var endDateElement) && 
+            endDateElement.ValueKind == JsonValueKind.String)
+        {
+            if (DateTime.TryParse(endDateElement.GetString(), out var date))
+            {
+                endDate = date;
+            }
+        }
+        
+        string workflowDefinitionId = "Unknown";
+        int workflowVersion = 0;
+        bool workflowArchived = false;
+        
+        if (root.TryGetProperty("workflow", out var workflowElement) && 
+            workflowElement.ValueKind == JsonValueKind.Object)
+        {
+            if (workflowElement.TryGetProperty("definitionId", out var defIdElement) && 
+                defIdElement.ValueKind == JsonValueKind.String)
+            {
+                workflowDefinitionId = defIdElement.GetString() ?? "Unknown";
+            }
+            
+            if (workflowElement.TryGetProperty("version", out var versionElement) && 
+                versionElement.ValueKind == JsonValueKind.Number)
+            {
+                workflowVersion = versionElement.GetInt32();
+            }
+            
+            if (workflowElement.TryGetProperty("archived", out var archivedElement) && 
+                archivedElement.ValueKind == JsonValueKind.True)
+            {
+                workflowArchived = true;
+            }
+        }
+        
+        // Check if movement already exists
+        await using var checkCmd = new NpgsqlCommand(
+            "SELECT id FROM movement_data.movements WHERE movement_id = @movementId", conn);
+        checkCmd.Parameters.AddWithValue("@movementId", movementId);
+        var existingId = await checkCmd.ExecuteScalarAsync();
+        
+        if (existingId != null && existingId != DBNull.Value)
+        {
+            // Update existing movement
+            await using var updateCmd = new NpgsqlCommand(@"
+                UPDATE movement_data.movements SET 
+                    employee_id = @employeeId,
+                    movement_type_id = @movementTypeId,
+                    status_id = @statusId,
+                    start_date = @startDate,
+                    end_date = @endDate,
+                    workflow_definition_id = @workflowDefinitionId,
+                    workflow_version = @workflowVersion,
+                    workflow_archived = @workflowArchived,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = @id
+            ", conn);
+            updateCmd.Parameters.AddWithValue("@id", Convert.ToInt32(existingId));
+            updateCmd.Parameters.AddWithValue("@employeeId", employeeId);
+            updateCmd.Parameters.AddWithValue("@movementTypeId", movementTypeId);
+            updateCmd.Parameters.AddWithValue("@statusId", statusId);
+            updateCmd.Parameters.AddWithValue("@startDate", startDate ?? (object)DBNull.Value);
+            updateCmd.Parameters.AddWithValue("@endDate", endDate ?? (object)DBNull.Value);
+            updateCmd.Parameters.AddWithValue("@workflowDefinitionId", workflowDefinitionId);
+            updateCmd.Parameters.AddWithValue("@workflowVersion", workflowVersion);
+            updateCmd.Parameters.AddWithValue("@workflowArchived", workflowArchived);
+            await updateCmd.ExecuteNonQueryAsync();
+            
+            return Convert.ToInt32(existingId);
+        }
+        else
+        {
+            // Insert new movement
+            await using var insertCmd = new NpgsqlCommand(@"
+                INSERT INTO movement_data.movements (
+                    movement_id,
+                    employee_id,
+                    movement_type_id,
+                    status_id,
+                    start_date,
+                    end_date,
+                    workflow_definition_id,
+                    workflow_version,
+                    workflow_archived
+                ) VALUES (
+                    @movementId,
+                    @employeeId,
+                    @movementTypeId,
+                    @statusId,
+                    @startDate,
+                    @endDate,
+                    @workflowDefinitionId,
+                    @workflowVersion,
+                    @workflowArchived
+                ) RETURNING id
+            ", conn);
+            insertCmd.Parameters.AddWithValue("@movementId", movementId);
+            insertCmd.Parameters.AddWithValue("@employeeId", employeeId);
+            insertCmd.Parameters.AddWithValue("@movementTypeId", movementTypeId);
+            insertCmd.Parameters.AddWithValue("@statusId", statusId);
+            insertCmd.Parameters.AddWithValue("@startDate", startDate ?? (object)DBNull.Value);
+            insertCmd.Parameters.AddWithValue("@endDate", endDate ?? (object)DBNull.Value);
+            insertCmd.Parameters.AddWithValue("@workflowDefinitionId", workflowDefinitionId);
+            insertCmd.Parameters.AddWithValue("@workflowVersion", workflowVersion);
+            insertCmd.Parameters.AddWithValue("@workflowArchived", workflowArchived);
+            
+            var result = await insertCmd.ExecuteScalarAsync();
+            if (result == null || result == DBNull.Value)
+                throw new Exception("Failed to insert movement and get ID");
+                
+            return Convert.ToInt32(result);
+        }
+    }
+    
+    private async Task ImportParticipants(NpgsqlConnection conn, JsonElement root, int movementId)
+    {
+        // Delete existing participants for this movement
+        await using var deleteCmd = new NpgsqlCommand(
+            "DELETE FROM movement_data.participants WHERE movement_id = @movementId", conn);
+        deleteCmd.Parameters.AddWithValue("@movementId", movementId);
+        await deleteCmd.ExecuteNonQueryAsync();
+        
+        // Import participants
+        if (root.TryGetProperty("participants", out var participantsElement) && 
+            participantsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var participant in participantsElement.EnumerateArray())
+            {
+                string employeeId = participant.TryGetProperty("employeeId", out var empIdElement) && 
+                                   empIdElement.ValueKind == JsonValueKind.String
+                    ? empIdElement.GetString() ?? "Unknown"
+                    : "Unknown";
+                
+                string name = participant.TryGetProperty("name", out var nameElement) && 
+                             nameElement.ValueKind == JsonValueKind.String
+                    ? nameElement.GetString() ?? ""
+                    : "";
+                
+                string positionId = participant.TryGetProperty("position", out var posElement) && 
+                                   posElement.ValueKind == JsonValueKind.String
+                    ? posElement.GetString() ?? ""
+                    : "";
+                
+                string positionTitle = participant.TryGetProperty("positionTitle", out var posTitleElement) && 
+                                      posTitleElement.ValueKind == JsonValueKind.String
+                    ? posTitleElement.GetString() ?? ""
+                    : "";
+                
+                int bannerId = GetLookupId(
+                    "banners", 
+                    participant.TryGetProperty("banner", out var bannerElement) && 
+                    bannerElement.ValueKind == JsonValueKind.String
+                        ? bannerElement.GetString() ?? "Unknown"
+                        : "Unknown"
+                );
+                
+                int brandId = GetLookupId(
+                    "brands", 
+                    participant.TryGetProperty("brandDisplayName", out var brandElement) && 
+                    brandElement.ValueKind == JsonValueKind.String
+                        ? brandElement.GetString() ?? "Unknown"
+                        : "Unknown"
+                );
+                
+                int departmentId = GetLookupId(
+                    "departments", 
+                    participant.TryGetProperty("payingDepartment", out var deptElement) && 
+                    deptElement.ValueKind == JsonValueKind.String
+                        ? deptElement.GetString() ?? "Unknown"
+                        : "Unknown"
+                );
+                
+                int costCentreId = GetLookupId(
+                    "cost_centres", 
+                    participant.TryGetProperty("costCentre", out var ccElement) && 
+                    ccElement.ValueKind == JsonValueKind.String
+                        ? ccElement.GetString() ?? "Unknown"
+                        : "Unknown"
+                );
+                
+                int roleId = GetLookupId(
+                    "participant_roles", 
+                    participant.TryGetProperty("role", out var roleElement) && 
+                    roleElement.ValueKind == JsonValueKind.String
+                        ? roleElement.GetString() ?? "Unknown"
+                        : "Unknown"
+                );
+                
+                string photoUrl = participant.TryGetProperty("photo", out var photoElement) && 
+                                 photoElement.ValueKind == JsonValueKind.String
+                    ? photoElement.GetString() ?? ""
+                    : "";
+                
+                await using var insertCmd = new NpgsqlCommand(@"
+                    INSERT INTO movement_data.participants (
+                        movement_id,
+                        employee_id,
+                        name,
+                        position_id,
+                        position_title,
+                        banner_id,
+                        brand_id,
+                        department_id,
+                        cost_centre_id,
+                        role_id,
+                        photo_url
+                    ) VALUES (
+                        @movementId,
+                        @employeeId,
+                        @name,
+                        @positionId,
+                        @positionTitle,
+                        @bannerId,
+                        @brandId,
+                        @departmentId,
+                        @costCentreId,
+                        @roleId,
+                        @photoUrl
+                    )
+                ", conn);
+                insertCmd.Parameters.AddWithValue("@movementId", movementId);
+                insertCmd.Parameters.AddWithValue("@employeeId", employeeId);
+                insertCmd.Parameters.AddWithValue("@name", name);
+                insertCmd.Parameters.AddWithValue("@positionId", positionId);
+                insertCmd.Parameters.AddWithValue("@positionTitle", positionTitle);
+                insertCmd.Parameters.AddWithValue("@bannerId", bannerId);
+                insertCmd.Parameters.AddWithValue("@brandId", brandId);
+                insertCmd.Parameters.AddWithValue("@departmentId", departmentId);
+                insertCmd.Parameters.AddWithValue("@costCentreId", costCentreId);
+                insertCmd.Parameters.AddWithValue("@roleId", roleId);
+                insertCmd.Parameters.AddWithValue("@photoUrl", photoUrl);
+                
+                await insertCmd.ExecuteNonQueryAsync();
+            }
+        }
+    }
+    
+    private async Task ImportJobInfo(NpgsqlConnection conn, JsonElement root, int movementId, string jobInfoProperty, bool isCurrent)
+    {
+        // Delete existing job info for this movement and type
+        await using var deleteCmd = new NpgsqlCommand(
+            "DELETE FROM movement_data.job_info WHERE movement_id = @movementId AND is_current = @isCurrent", conn);
+        deleteCmd.Parameters.AddWithValue("@movementId", movementId);
+        deleteCmd.Parameters.AddWithValue("@isCurrent", isCurrent);
+        await deleteCmd.ExecuteNonQueryAsync();
+        
+        // Import job info
+        if (root.TryGetProperty(jobInfoProperty, out var jobInfoElement) && 
+            jobInfoElement.ValueKind == JsonValueKind.Object)
+        {
+            try
+            {
+                var cmd = new NpgsqlCommand(@"
+                    INSERT INTO movement_data.job_info (
+                        movement_id,
+                        is_current,
+                        working_days_per_week,
+                        base_hours,
+                        employee_group_id,
+                        position_id,
+                        position_title,
+                        banner_id,
+                        brand_id,
+                        business_group_id,
+                        cost_centre_id,
+                        employee_subgroup_id,
+                        job_role_id,
+                        department_id,
+                        salary_amount,
+                        salary_min,
+                        salary_max,
+                        salary_benchmark,
+                        discretionary_allowance,
+                        sti_target,
+                        manager_employee_id,
+                        manager_name,
+                        manager_position_id,
+                        manager_position_title,
+                        start_date,
+                        end_date,
+                        employee_movement_type,
+                        sti_scheme,
+                        pay_scale_group,
+                        pay_scale_level,
+                        leave_entitlement,
+                        leave_entitlement_name,
+                        car_eligibility
+                    ) VALUES (
+                        @movementId,
+                        @isCurrent,
+                        @workingDaysPerWeek,
+                        @baseHours,
+                        @employeeGroupId,
+                        @positionId,
+                        @positionTitle,
+                        @bannerId,
+                        @brandId,
+                        @businessGroupId,
+                        @costCentreId,
+                        @employeeSubgroupId,
+                        @jobRoleId,
+                        @departmentId,
+                        @salaryAmount,
+                        @salaryMin,
+                        @salaryMax,
+                        @salaryBenchmark,
+                        @discretionaryAllowance,
+                        @stiTarget,
+                        @managerEmployeeId,
+                        @managerName,
+                        @managerPositionId,
+                        @managerPositionTitle,
+                        @startDate,
+                        @endDate,
+                        @employeeMovementType,
+                        @stiScheme,
+                        @payScaleGroup,
+                        @payScaleLevel,
+                        @leaveEntitlement,
+                        @leaveEntitlementName,
+                        @carEligibility
+                    )
+                ", conn);
+                
+                // SAFER PARAMETER HANDLING
+                try {
+                    cmd.Parameters.AddWithValue("@movementId", movementId);
+                    cmd.Parameters.AddWithValue("@isCurrent", isCurrent);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with basic parameters: {ex.Message}", ex);
+                }
+                
+                // Working days per week
+                try {
+                    int? workingDaysPerWeek = null;
+                    if (jobInfoElement.TryGetProperty("workingDaysPerWeek", out var wdpwElement))
+                    {
+                        // Log the actual type and value for debugging
+                        string valueType = wdpwElement.ValueKind.ToString();
+                        string rawValue = wdpwElement.ToString();
+                        
+                        if (wdpwElement.ValueKind == JsonValueKind.Number)
+                        {
+                            try {
+                                workingDaysPerWeek = wdpwElement.GetInt32();
+                            }
+                            catch {
+                                // Try as double first, then convert
+                                try {
+                                    double daysDouble = wdpwElement.GetDouble();
+                                    workingDaysPerWeek = (int)Math.Round(daysDouble);
+                                }
+                                catch {
+                                    // If that fails, ignore
+                                }
+                            }
+                        }
+                        else if (wdpwElement.ValueKind == JsonValueKind.String)
+                        {
+                            string strValue = wdpwElement.GetString() ?? "";
+                            if (int.TryParse(strValue, out var wdpwInt))
+                            {
+                                workingDaysPerWeek = wdpwInt;
+                            }
+                            else if (double.TryParse(strValue, out var wdpwDouble))
+                            {
+                                workingDaysPerWeek = (int)Math.Round(wdpwDouble);
+                            }
+                            // For special case values we want to convert to null
+                            else if (string.IsNullOrEmpty(strValue) || 
+                                     strValue.Equals("null", StringComparison.OrdinalIgnoreCase) ||
+                                     strValue.Equals("undefined", StringComparison.OrdinalIgnoreCase) ||
+                                     strValue.Equals("NA", StringComparison.OrdinalIgnoreCase) ||
+                                     strValue.Equals("N/A", StringComparison.OrdinalIgnoreCase))
+                            {
+                                workingDaysPerWeek = null;
+                            }
+                        }
+                        
+                        // Add debug info if parsing fails
+                        if (workingDaysPerWeek == null && !string.IsNullOrEmpty(rawValue) && 
+                            rawValue != "null" && rawValue != "undefined")
+                        {
+                            Warnings.Add($"Could not parse workingDaysPerWeek value: '{rawValue}' of type {valueType}");
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@workingDaysPerWeek", workingDaysPerWeek ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    string valueInfo = "not found";
+                    if (jobInfoElement.TryGetProperty("workingDaysPerWeek", out var w)) {
+                        valueInfo = $"{w.ValueKind}: {w}";
+                    }
+                    throw new Exception($"Error with workingDaysPerWeek parameter: {ex.Message} | Value: {valueInfo}", ex);
+                }
+
+                // Base hours
+                try {
+                    int? baseHours = null;
+                    if (jobInfoElement.TryGetProperty("baseHours", out var bhElement))
+                    {
+                        // Log the actual type and value for debugging
+                        string valueType = bhElement.ValueKind.ToString();
+                        string rawValue = bhElement.ToString();
+                        
+                        if (bhElement.ValueKind == JsonValueKind.Number)
+                        {
+                            try {
+                                baseHours = bhElement.GetInt32();
+                            }
+                            catch {
+                                // Try as double first, then convert
+                                try {
+                                    double hoursDouble = bhElement.GetDouble();
+                                    baseHours = (int)Math.Round(hoursDouble);
+                                }
+                                catch {
+                                    // If that fails, ignore
+                                }
+                            }
+                        }
+                        else if (bhElement.ValueKind == JsonValueKind.String)
+                        {
+                            string strValue = bhElement.GetString() ?? "";
+                            if (int.TryParse(strValue, out var bhInt))
+                            {
+                                baseHours = bhInt;
+                            }
+                            else if (double.TryParse(strValue, out var bhDouble))
+                            {
+                                baseHours = (int)Math.Round(bhDouble);
+                            }
+                            // For special case values we want to convert to null
+                            else if (string.IsNullOrEmpty(strValue) || 
+                                     strValue.Equals("null", StringComparison.OrdinalIgnoreCase) ||
+                                     strValue.Equals("undefined", StringComparison.OrdinalIgnoreCase) ||
+                                     strValue.Equals("NA", StringComparison.OrdinalIgnoreCase) ||
+                                     strValue.Equals("N/A", StringComparison.OrdinalIgnoreCase))
+                            {
+                                baseHours = null;
+                            }
+                        }
+                        
+                        // Add debug info if parsing fails
+                        if (baseHours == null && !string.IsNullOrEmpty(rawValue) && 
+                            rawValue != "null" && rawValue != "undefined")
+                        {
+                            Warnings.Add($"Could not parse baseHours value: '{rawValue}' of type {valueType}");
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@baseHours", baseHours ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    string valueInfo = "not found";
+                    if (jobInfoElement.TryGetProperty("baseHours", out var b)) {
+                        valueInfo = $"{b.ValueKind}: {b}";
+                    }
+                    throw new Exception($"Error with baseHours parameter: {ex.Message} | Value: {valueInfo}", ex);
+                }
+                
+                // Employee group
+                try {
+                    int employeeGroupId = GetLookupId("employee_groups", 
+                        jobInfoElement.TryGetProperty("employeeGroup", out var egElement) && 
+                        egElement.ValueKind == JsonValueKind.String
+                            ? egElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@employeeGroupId", employeeGroupId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with employeeGroupId parameter: {ex.Message}", ex);
+                }
+                
+                // Position info
+                JsonElement positionElement = default;
+                bool hasPosition = jobInfoElement.TryGetProperty("position", out positionElement) && 
+                                  positionElement.ValueKind == JsonValueKind.Object;
+                
+                string positionId = "";
+                string positionTitle = "";
+                
+                try {
+                    if (hasPosition)
+                    {
+                        positionId = positionElement.TryGetProperty("positionId", out var posIdElement) && 
+                                    posIdElement.ValueKind == JsonValueKind.String
+                            ? posIdElement.GetString() ?? ""
+                            : "";
+                        
+                        positionTitle = positionElement.TryGetProperty("title", out var posTitleElement) && 
+                                       posTitleElement.ValueKind == JsonValueKind.String
+                            ? posTitleElement.GetString() ?? ""
+                            : "";
+                    }
+                    else
+                    {
+                        // For legacy data where position might be a string ID instead of object
+                        positionId = jobInfoElement.TryGetProperty("position", out var posIdElement) && 
+                                    posIdElement.ValueKind == JsonValueKind.String
+                            ? posIdElement.GetString() ?? ""
+                            : "";
+                    }
+                    
+                    cmd.Parameters.AddWithValue("@positionId", positionId);
+                    cmd.Parameters.AddWithValue("@positionTitle", positionTitle);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with position parameters: {ex.Message}", ex);
+                }
+                
+                // Banner, brand, group
+                try {
+                    int bannerId = GetLookupId("banners", 
+                        hasPosition && positionElement.TryGetProperty("banner", out var bannerElement) && 
+                        bannerElement.ValueKind == JsonValueKind.String
+                            ? bannerElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@bannerId", bannerId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with bannerId parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    int brandId = GetLookupId("brands", 
+                        hasPosition && positionElement.TryGetProperty("brand", out var brandElement) && 
+                        brandElement.ValueKind == JsonValueKind.String
+                            ? brandElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@brandId", brandId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with brandId parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    int businessGroupId = GetLookupId("business_groups", 
+                        hasPosition && positionElement.TryGetProperty("group", out var groupElement) && 
+                        groupElement.ValueKind == JsonValueKind.String
+                            ? groupElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@businessGroupId", businessGroupId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with businessGroupId parameter: {ex.Message}", ex);
+                }
+                
+                // Cost centre
+                try {
+                    int costCentreId = GetLookupId("cost_centres", 
+                        hasPosition && positionElement.TryGetProperty("costCentre", out var ccElement) && 
+                        ccElement.ValueKind == JsonValueKind.String
+                            ? ccElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@costCentreId", costCentreId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with costCentreId parameter: {ex.Message}", ex);
+                }
+                
+                // Employee subgroup
+                try {
+                    int employeeSubgroupId = GetLookupId("employee_subgroups", 
+                        hasPosition && positionElement.TryGetProperty("employeeSubgroup", out var esElement) && 
+                        esElement.ValueKind == JsonValueKind.String
+                            ? esElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@employeeSubgroupId", employeeSubgroupId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with employeeSubgroupId parameter: {ex.Message}", ex);
+                }
+                
+                // Job role
+                try {
+                    int jobRoleId = GetLookupId("job_roles", 
+                        hasPosition && positionElement.TryGetProperty("jobRole", out var jrElement) && 
+                        jrElement.ValueKind == JsonValueKind.String
+                            ? jrElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@jobRoleId", jobRoleId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with jobRoleId parameter: {ex.Message}", ex);
+                }
+                
+                // Department
+                try {
+                    int departmentId = GetLookupId("departments", 
+                        hasPosition && positionElement.TryGetProperty("payingDepartment", out var pdElement) && 
+                        pdElement.ValueKind == JsonValueKind.String
+                            ? pdElement.GetString() ?? "Unknown"
+                            : "Unknown");
+                    cmd.Parameters.AddWithValue("@departmentId", departmentId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with departmentId parameter: {ex.Message}", ex);
+                }
+                
+                // Salary info - THIS IS LIKELY WHERE THE ERRORS ARE OCCURRING
+                try {
+                    decimal? salaryAmount = null;
+                    if (jobInfoElement.TryGetProperty("salary", out var salaryElement))
+                    {
+                        if (salaryElement.ValueKind == JsonValueKind.Number)
+                        {
+                            try {
+                                salaryAmount = salaryElement.GetDecimal();
+                            }
+                            catch {
+                                // If decimal fails, try double and convert
+                                try {
+                                    double salaryDouble = salaryElement.GetDouble();
+                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
+                                    {
+                                        salaryAmount = Convert.ToDecimal(salaryDouble);
+                                    }
+                                }
+                                catch {
+                                    // If still fails, try string parse
+                                    if (salaryElement.ValueKind == JsonValueKind.String &&
+                                        decimal.TryParse(salaryElement.GetString(), out var salaryDecimal))
+                                    {
+                                        salaryAmount = salaryDecimal;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@salaryAmount", salaryAmount ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    string salaryValue = "not found";
+                    if (jobInfoElement.TryGetProperty("salary", out var s)) {
+                        salaryValue = s.ToString();
+                    }
+                    throw new Exception($"Error with salaryAmount parameter: {ex.Message} | Value: {salaryValue}", ex);
+                }
+                
+                // Salary Min
+                try {
+                    decimal? salaryMin = null;
+                    if (hasPosition && positionElement.TryGetProperty("salaryMin", out var salMinElement))
+                    {
+                        if (salMinElement.ValueKind == JsonValueKind.Number)
+                        {
+                            try {
+                                salaryMin = salMinElement.GetDecimal();
+                            }
+                            catch {
+                                try {
+                                    double salaryDouble = salMinElement.GetDouble();
+                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
+                                    {
+                                        salaryMin = Convert.ToDecimal(salaryDouble);
+                                    }
+                                }
+                                catch {
+                                    if (salMinElement.ValueKind == JsonValueKind.String &&
+                                        decimal.TryParse(salMinElement.GetString(), out var salaryDecimal))
+                                    {
+                                        salaryMin = salaryDecimal;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@salaryMin", salaryMin ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with salaryMin parameter: {ex.Message}", ex);
+                }
+                
+                // Salary Max
+                try {
+                    decimal? salaryMax = null;
+                    if (hasPosition && positionElement.TryGetProperty("salaryMax", out var salMaxElement))
+                    {
+                        if (salMaxElement.ValueKind == JsonValueKind.Number)
+                        {
+                            try {
+                                salaryMax = salMaxElement.GetDecimal();
+                            }
+                            catch {
+                                try {
+                                    double salaryDouble = salMaxElement.GetDouble();
+                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
+                                    {
+                                        salaryMax = Convert.ToDecimal(salaryDouble);
+                                    }
+                                }
+                                catch {
+                                    if (salMaxElement.ValueKind == JsonValueKind.String &&
+                                        decimal.TryParse(salMaxElement.GetString(), out var salaryDecimal))
+                                    {
+                                        salaryMax = salaryDecimal;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@salaryMax", salaryMax ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with salaryMax parameter: {ex.Message}", ex);
+                }
+                
+                // Salary Benchmark
+                try {
+                    decimal? salaryBenchmark = null;
+                    if (hasPosition && positionElement.TryGetProperty("salaryAwardBenchmark", out var sabElement))
+                    {
+                        if (sabElement.ValueKind == JsonValueKind.Number)
+                        {
+                            try {
+                                salaryBenchmark = sabElement.GetDecimal();
+                            }
+                            catch {
+                                try {
+                                    double salaryDouble = sabElement.GetDouble();
+                                    if (!double.IsNaN(salaryDouble) && !double.IsInfinity(salaryDouble))
+                                    {
+                                        salaryBenchmark = Convert.ToDecimal(salaryDouble);
+                                    }
+                                }
+                                catch {
+                                    if (sabElement.ValueKind == JsonValueKind.String &&
+                                        decimal.TryParse(sabElement.GetString(), out var salaryDecimal))
+                                    {
+                                        salaryBenchmark = salaryDecimal;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@salaryBenchmark", salaryBenchmark ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with salaryBenchmark parameter: {ex.Message}", ex);
+                }
+                
+                // Discretionary Allowance
+                try {
+                    decimal? discretionaryAllowance = null;
+                    if (jobInfoElement.TryGetProperty("discretionaryAllowance", out var daElement))
+                    {
+                        if (daElement.ValueKind == JsonValueKind.Number)
+                        {
+                            try {
+                                discretionaryAllowance = daElement.GetDecimal();
+                            }
+                            catch {
+                                try {
+                                    double allowanceDouble = daElement.GetDouble();
+                                    if (!double.IsNaN(allowanceDouble) && !double.IsInfinity(allowanceDouble))
+                                    {
+                                        discretionaryAllowance = Convert.ToDecimal(allowanceDouble);
+                                    }
+                                }
+                                catch {
+                                    if (daElement.ValueKind == JsonValueKind.String &&
+                                        decimal.TryParse(daElement.GetString(), out var allowanceDecimal))
+                                    {
+                                        discretionaryAllowance = allowanceDecimal;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@discretionaryAllowance", discretionaryAllowance ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with discretionaryAllowance parameter: {ex.Message}", ex);
+                }
+                
+                // STI Target
+                try {
+                    int? stiTarget = null;
+                    if (hasPosition && positionElement.TryGetProperty("stiTarget", out var stiElement))
+                    {
+                        if (stiElement.ValueKind == JsonValueKind.Number)
+                        {
+                            stiTarget = stiElement.GetInt32();
+                        }
+                        else if (stiElement.ValueKind == JsonValueKind.String && 
+                                int.TryParse(stiElement.GetString(), out var stiInt))
+                        {
+                            stiTarget = stiInt;
+                        }
+                    }
+                    cmd.Parameters.AddWithValue("@stiTarget", stiTarget ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with stiTarget parameter: {ex.Message}", ex);
+                }
+                
+                // Manager info
+                JsonElement managerElement = default;
+                bool hasManager = jobInfoElement.TryGetProperty("manager", out managerElement) && 
+                                 managerElement.ValueKind == JsonValueKind.Object;
+                
+                try {
+                    string managerEmployeeId = 
+                        hasManager && managerElement.TryGetProperty("employeeId", out var mEmpIdElement) && 
+                        mEmpIdElement.ValueKind == JsonValueKind.String
+                            ? mEmpIdElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@managerEmployeeId", managerEmployeeId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with managerEmployeeId parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string managerName = 
+                        hasManager && managerElement.TryGetProperty("name", out var mNameElement) && 
+                        mNameElement.ValueKind == JsonValueKind.String
+                            ? mNameElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@managerName", managerName);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with managerName parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string managerPositionId = 
+                        hasManager && managerElement.TryGetProperty("position", out var mPosElement) && 
+                        mPosElement.ValueKind == JsonValueKind.String
+                            ? mPosElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@managerPositionId", managerPositionId);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with managerPositionId parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string managerPositionTitle = 
+                        hasManager && managerElement.TryGetProperty("positionTitle", out var mPosTitleElement) && 
+                        mPosTitleElement.ValueKind == JsonValueKind.String
+                            ? mPosTitleElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@managerPositionTitle", managerPositionTitle);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with managerPositionTitle parameter: {ex.Message}", ex);
+                }
+                
+                // Dates - THIS COULD ALSO BE WHERE ERRORS OCCUR
+                try {
+                    DateTime? startDate = null;
+                    if (jobInfoElement.TryGetProperty("startDate", out var startDateElement) && 
+                        startDateElement.ValueKind == JsonValueKind.String)
+                    {
+                        string dateStr = startDateElement.GetString() ?? "";
+                        if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var date))
+                        {
+                            startDate = date;
+                        }
+                    }
+                    
+                    cmd.Parameters.AddWithValue("@startDate", startDate ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with startDate parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    DateTime? endDate = null;
+                    if (jobInfoElement.TryGetProperty("endDate", out var endDateElement) && 
+                        endDateElement.ValueKind == JsonValueKind.String)
+                    {
+                        string dateStr = endDateElement.GetString() ?? "";
+                        if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, out var date))
+                        {
+                            endDate = date;
+                        }
+                    }
+                    
+                    cmd.Parameters.AddWithValue("@endDate", endDate ?? (object)DBNull.Value);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with endDate parameter: {ex.Message}", ex);
+                }
+                
+                // Additional info
+                try {
+                    string employeeMovementType = 
+                        jobInfoElement.TryGetProperty("employeeMovementType", out var emtElement) && 
+                        emtElement.ValueKind == JsonValueKind.String
+                            ? emtElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@employeeMovementType", employeeMovementType);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with employeeMovementType parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string stiScheme = 
+                        jobInfoElement.TryGetProperty("stiScheme", out var stiSchemeElement) && 
+                        stiSchemeElement.ValueKind == JsonValueKind.String
+                            ? stiSchemeElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@stiScheme", stiScheme);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with stiScheme parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string payScaleGroup = 
+                        jobInfoElement.TryGetProperty("payScaleGroup", out var psgElement) && 
+                        psgElement.ValueKind == JsonValueKind.String
+                            ? psgElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@payScaleGroup", payScaleGroup);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with payScaleGroup parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string payScaleLevel = 
+                        jobInfoElement.TryGetProperty("payScaleLevel", out var pslElement) && 
+                        pslElement.ValueKind == JsonValueKind.String
+                            ? pslElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@payScaleLevel", payScaleLevel);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with payScaleLevel parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string leaveEntitlement = 
+                        hasPosition && positionElement.TryGetProperty("leaveEntitlement", out var leElement) && 
+                        leElement.ValueKind == JsonValueKind.String
+                            ? leElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@leaveEntitlement", leaveEntitlement);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with leaveEntitlement parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string leaveEntitlementName = 
+                        hasPosition && positionElement.TryGetProperty("leaveEntitlementName", out var lenElement) && 
+                        lenElement.ValueKind == JsonValueKind.String
+                            ? lenElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@leaveEntitlementName", leaveEntitlementName);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with leaveEntitlementName parameter: {ex.Message}", ex);
+                }
+                
+                try {
+                    string carEligibility = 
+                        hasPosition && positionElement.TryGetProperty("carEligibility", out var ceElement) && 
+                        ceElement.ValueKind == JsonValueKind.String
+                            ? ceElement.GetString() ?? ""
+                            : "";
+                    
+                    cmd.Parameters.AddWithValue("@carEligibility", carEligibility);
+                } catch (Exception ex) {
+                    throw new Exception($"Error with carEligibility parameter: {ex.Message}", ex);
+                }
+                
+                // Set the connection
+                cmd.Connection = conn;
+                
+                // Execute the command
+                await cmd.ExecuteNonQueryAsync();
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error while importing job info. {ex.Message}", ex);
+            }
+        }
+    }
+    
+    private async Task ImportContract(NpgsqlConnection conn, JsonElement root, int movementId, string contractProperty, bool isCurrent)
+    {
+        try
+        {
+            // Delete existing contract for this movement and type
+            await using var deleteContractCmd = new NpgsqlCommand(
+                "DELETE FROM movement_data.contracts WHERE movement_id = @movementId AND is_current = @isCurrent", conn);
+            deleteContractCmd.Parameters.AddWithValue("@movementId", movementId);
+            deleteContractCmd.Parameters.AddWithValue("@isCurrent", isCurrent);
+            await deleteContractCmd.ExecuteNonQueryAsync();
+            
+            // Import contract
+            if (root.TryGetProperty(contractProperty, out var contractElement) && 
+                contractElement.ValueKind == JsonValueKind.Object)
+            {
+                // Insert contract
+                await using var insertContractCmd = new NpgsqlCommand(@"
+                    INSERT INTO movement_data.contracts (
+                        movement_id,
+                        is_current
+                    ) VALUES (
+                        @movementId,
+                        @isCurrent
+                    ) RETURNING id
+                ", conn);
+                insertContractCmd.Parameters.AddWithValue("@movementId", movementId);
+                insertContractCmd.Parameters.AddWithValue("@isCurrent", isCurrent);
+                
+                var contractResult = await insertContractCmd.ExecuteScalarAsync();
+                if (contractResult == null || contractResult == DBNull.Value)
+                    throw new Exception("Failed to insert contract and get ID");
+                    
+                int contractId = Convert.ToInt32(contractResult);
+                
+                // Import mutual flags
+                if (contractElement.TryGetProperty("mutualFlags", out var flagsElement) && 
+                    flagsElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var flag in flagsElement.EnumerateArray())
+                    {
+                        if (flag.ValueKind == JsonValueKind.String)
+                        {
+                            string flagValue = flag.GetString() ?? "Unknown";
+                            int flagId = GetLookupId("mutual_flags", flagValue);
+                            
+                            try
+                            {
+                                await using var insertFlagCmd = new NpgsqlCommand(@"
+                                    INSERT INTO movement_data.contract_mutual_flags (
+                                        contract_id,
+                                        flag_id
+                                    ) VALUES (
+                                        @contractId,
+                                        @flagId
+                                    ) ON CONFLICT DO NOTHING
+                                ", conn);
+                                insertFlagCmd.Parameters.AddWithValue("@contractId", contractId);
+                                insertFlagCmd.Parameters.AddWithValue("@flagId", flagId);
+                                
+                                await insertFlagCmd.ExecuteNonQueryAsync();
+                            }
+                            catch (Exception ex)
+                            {
+                                Warnings.Add($"Unable to import mutual flag '{flagValue}': {ex.Message}");
+                            }
+                        }
+                    }
+                }
+                
+                // Import weeks
+                if (contractElement.TryGetProperty("weeks", out var weeksElement) && 
+                    weeksElement.ValueKind == JsonValueKind.Array)
+                {
+                    int weekIndex = 0;
+                    foreach (var week in weeksElement.EnumerateArray())
+                    {
+                        if (week.ValueKind == JsonValueKind.Object)
+                        {
+                            try
+                            {
+                                // Insert week
+                                await using var insertWeekCmd = new NpgsqlCommand(@"
+                                    INSERT INTO movement_data.contract_weeks (
+                                        contract_id,
+                                        week_index
+                                    ) VALUES (
+                                        @contractId,
+                                        @weekIndex
+                                    ) RETURNING id
+                                ", conn);
+                                insertWeekCmd.Parameters.AddWithValue("@contractId", contractId);
+                                insertWeekCmd.Parameters.AddWithValue("@weekIndex", weekIndex);
+                                
+                                var weekResult = await insertWeekCmd.ExecuteScalarAsync();
+                                if (weekResult == null || weekResult == DBNull.Value)
+                                    throw new Exception("Failed to insert week and get ID");
+                                    
+                                int weekId = Convert.ToInt32(weekResult);
+                                
+                                // Import days
+                                string[] days = { "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
+                                foreach (var day in days)
+                                {
+                                    if (week.TryGetProperty(day, out var dayElement) && 
+                                        dayElement.ValueKind == JsonValueKind.Array)
+                                    {
+                                        foreach (var shift in dayElement.EnumerateArray())
+                                        {
+                                            if (shift.ValueKind == JsonValueKind.Object)
+                                            {
+                                                try
+                                                {
+                                                    string startTime = shift.TryGetProperty("start", out var startElement) && 
+                                                                     startElement.ValueKind == JsonValueKind.String
+                                                        ? startElement.GetString() ?? "00:00"
+                                                        : "00:00";
+                                                    
+                                                    string endTime = shift.TryGetProperty("end", out var endElement) && 
+                                                                   endElement.ValueKind == JsonValueKind.String
+                                                        ? endElement.GetString() ?? "00:00"
+                                                        : "00:00";
+                                                    
+                                                    // Insert daily schedule with safe time parsing
+                                                    await using var insertScheduleCmd = new NpgsqlCommand(@"
+                                                        INSERT INTO movement_data.daily_schedules (
+                                                            contract_week_id,
+                                                            day_of_week,
+                                                            start_time,
+                                                            end_time
+                                                        ) VALUES (
+                                                            @weekId,
+                                                            @dayOfWeek,
+                                                            @startTime,
+                                                            @endTime
+                                                        ) RETURNING id
+                                                    ", conn);
+                                                    insertScheduleCmd.Parameters.AddWithValue("@weekId", weekId);
+                                                    insertScheduleCmd.Parameters.AddWithValue("@dayOfWeek", day);
+                                                    insertScheduleCmd.Parameters.AddWithValue("@startTime", SafeParseTimeSpan(startTime));
+                                                    insertScheduleCmd.Parameters.AddWithValue("@endTime", SafeParseTimeSpan(endTime));
+                                                    
+                                                    var scheduleResult = await insertScheduleCmd.ExecuteScalarAsync();
+                                                    if (scheduleResult == null || scheduleResult == DBNull.Value)
+                                                        throw new Exception("Failed to insert schedule and get ID");
+                                                        
+                                                    int scheduleId = Convert.ToInt32(scheduleResult);
+                                                    
+                                                    // Import breaks
+                                                    if (shift.TryGetProperty("breaks", out var breaksElement) && 
+                                                        breaksElement.ValueKind == JsonValueKind.Array)
+                                                    {
+                                                        foreach (var breakItem in breaksElement.EnumerateArray())
+                                                        {
+                                                            if (breakItem.ValueKind == JsonValueKind.String)
+                                                            {
+                                                                try
+                                                                {
+                                                                    string breakType = breakItem.GetString() ?? "Unknown";
+                                                                    int breakTypeId = GetLookupId("break_types", breakType);
+                                                                    
+                                                                    await using var insertBreakCmd = new NpgsqlCommand(@"
+                                                                        INSERT INTO movement_data.schedule_breaks (
+                                                                            daily_schedule_id,
+                                                                            break_type_id
+                                                                        ) VALUES (
+                                                                            @scheduleId,
+                                                                            @breakTypeId
+                                                                        )
+                                                                    ", conn);
+                                                                    insertBreakCmd.Parameters.AddWithValue("@scheduleId", scheduleId);
+                                                                    insertBreakCmd.Parameters.AddWithValue("@breakTypeId", breakTypeId);
+                                                                    
+                                                                    await insertBreakCmd.ExecuteNonQueryAsync();
+                                                                }
+                                                                catch (Exception ex)
+                                                                {
+                                                                    Warnings.Add($"Unable to import break: {ex.Message}");
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                catch (Exception ex)
+                                                {
+                                                    Warnings.Add($"Unable to import shift for {day} in week {weekIndex}: {ex.Message}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                weekIndex++;
+                            }
+                            catch (Exception ex)
+                            {
+                                Warnings.Add($"Unable to import week {weekIndex}: {ex.Message}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"Error importing contract {contractProperty}: {ex.Message}");
+            throw; // Rethrow to ensure transaction rolls back
+        }
+    }
+    
+    private async Task ImportHistory(NpgsqlConnection conn, JsonElement root, int movementId)
+    {
+        // Delete existing history events for this movement
+        await using var deleteCmd = new NpgsqlCommand(
+            "DELETE FROM movement_data.history_events WHERE movement_id = @movementId", conn);
+        deleteCmd.Parameters.AddWithValue("@movementId", movementId);
+        await deleteCmd.ExecuteNonQueryAsync();
+        
+        // Import history events
+        if (root.TryGetProperty("history", out var historyElement) && 
+            historyElement.ValueKind == JsonValueKind.Array)
+        {
+            int eventIndex = 0;
+            foreach (var eventObj in historyElement.EnumerateArray())
+            {
+                if (eventObj.ValueKind == JsonValueKind.Object)
+                {
+                    // Get the first property, which is the event type
+                    foreach (var eventProperty in eventObj.EnumerateObject())
+                    {
+                        string eventType = eventProperty.Name;
+                        int eventTypeId = GetLookupId("history_event_types", eventType);
+                        
+                        var eventData = eventProperty.Value;
+                        if (eventData.ValueKind == JsonValueKind.Object)
+                        {
+                            DateTime? createdDate = null;
+                            if (eventData.TryGetProperty("createdDate", out var cdElement) && 
+                                cdElement.ValueKind == JsonValueKind.String)
+                            {
+                                if (DateTime.TryParse(cdElement.GetString(), out var date))
+                                {
+                                    createdDate = date;
+                                }
+                            }
+                            
+                            string createdBy = eventData.TryGetProperty("createdBy", out var cbElement) && 
+                                             cbElement.ValueKind == JsonValueKind.String
+                                ? cbElement.GetString() ?? ""
+                                : "";
+                            
+                            string createdByName = eventData.TryGetProperty("createdByName", out var cbnElement) && 
+                                                  cbnElement.ValueKind == JsonValueKind.String
+                                ? cbnElement.GetString() ?? ""
+                                : "";
+                            
+                            string notes = eventData.TryGetProperty("notes", out var notesElement) && 
+                                         notesElement.ValueKind == JsonValueKind.String
+                                ? notesElement.GetString() ?? ""
+                                : "";
+                            
+                            // Participant data
+                            string participantEmployeeId = "";
+                            string participantName = "";
+                            string participantPositionId = "";
+                            string participantPositionTitle = "";
+                            int? participantRoleId = null;
+                            
+                            if (eventData.TryGetProperty("participant", out var participantElement) && 
+                                participantElement.ValueKind == JsonValueKind.Object)
+                            {
+                                participantEmployeeId = participantElement.TryGetProperty("employeeId", out var peElement) && 
+                                                       peElement.ValueKind == JsonValueKind.String
+                                    ? peElement.GetString() ?? ""
+                                    : "";
+                                
+                                participantName = participantElement.TryGetProperty("name", out var pnElement) && 
+                                                 pnElement.ValueKind == JsonValueKind.String
+                                    ? pnElement.GetString() ?? ""
+                                    : "";
+                                
+                                participantPositionId = participantElement.TryGetProperty("position", out var ppElement) && 
+                                                       ppElement.ValueKind == JsonValueKind.String
+                                    ? ppElement.GetString() ?? ""
+                                    : "";
+                                
+                                participantPositionTitle = participantElement.TryGetProperty("positionTitle", out var pptElement) && 
+                                                          pptElement.ValueKind == JsonValueKind.String
+                                    ? pptElement.GetString() ?? ""
+                                    : "";
+                                
+                                if (participantElement.TryGetProperty("role", out var prElement) && 
+                                    prElement.ValueKind == JsonValueKind.String)
+                                {
+                                    string roleValue = prElement.GetString() ?? "Unknown";
+                                    participantRoleId = GetLookupId("participant_roles", roleValue);
+                                }
+                            }
+                            
+                            // Insert history event
+                            await using var insertCmd = new NpgsqlCommand(@"
+                                INSERT INTO movement_data.history_events (
+                                    movement_id,
+                                    event_type_id,
+                                    event_index,
+                                    created_date,
+                                    created_by,
+                                    created_by_name,
+                                    participant_employee_id,
+                                    participant_name,
+                                    participant_position_id,
+                                    participant_position_title,
+                                    participant_role_id,
+                                    notes,
+                                    event_data
+                                ) VALUES (
+                                    @movementId,
+                                    @eventTypeId,
+                                    @eventIndex,
+                                    @createdDate,
+                                    @createdBy,
+                                    @createdByName,
+                                    @participantEmployeeId,
+                                    @participantName,
+                                    @participantPositionId,
+                                    @participantPositionTitle,
+                                    @participantRoleId,
+                                    @notes,
+                                    @eventData
+                                )
+                            ", conn);
+                            insertCmd.Parameters.AddWithValue("@movementId", movementId);
+                            insertCmd.Parameters.AddWithValue("@eventTypeId", eventTypeId);
+                            insertCmd.Parameters.AddWithValue("@eventIndex", eventIndex);
+                            insertCmd.Parameters.AddWithValue("@createdDate", createdDate ?? (object)DBNull.Value);
+                            insertCmd.Parameters.AddWithValue("@createdBy", createdBy);
+                            insertCmd.Parameters.AddWithValue("@createdByName", createdByName);
+                            insertCmd.Parameters.AddWithValue("@participantEmployeeId", participantEmployeeId);
+                            insertCmd.Parameters.AddWithValue("@participantName", participantName);
+                            insertCmd.Parameters.AddWithValue("@participantPositionId", participantPositionId);
+                            insertCmd.Parameters.AddWithValue("@participantPositionTitle", participantPositionTitle);
+                            insertCmd.Parameters.AddWithValue("@participantRoleId", participantRoleId ?? (object)DBNull.Value);
+                            insertCmd.Parameters.AddWithValue("@notes", notes);
+                            
+                            var npgsqlParameter = new NpgsqlParameter("@eventData", NpgsqlDbType.Jsonb)
+                            {
+                                Value = eventData.GetRawText()
+                            };
+                            insertCmd.Parameters.Add(npgsqlParameter);
+                            
+                            await insertCmd.ExecuteNonQueryAsync();
+                        }
+                        
+                        break; // Only process the first property (event type)
+                    }
+                    
+                    eventIndex++;
+                }
+            }
+        }
+    }
+    
+    private async Task ImportTags(NpgsqlConnection conn, JsonElement root, int movementId)
+    {
+        // Delete existing tags for this movement
+        await using var deleteCmd = new NpgsqlCommand(
+            "DELETE FROM movement_data.tags WHERE movement_id = @movementId", conn);
+        deleteCmd.Parameters.AddWithValue("@movementId", movementId);
+        await deleteCmd.ExecuteNonQueryAsync();
+        
+        // Import tags
+        if (root.TryGetProperty("tags", out var tagsElement) && 
+            tagsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var tag in tagsElement.EnumerateArray())
+            {
+                if (tag.ValueKind == JsonValueKind.String)
+                {
+                    string tagValue = tag.GetString() ?? "";
+                    if (!string.IsNullOrEmpty(tagValue))
+                    {
+                        await using var insertCmd = new NpgsqlCommand(@"
+                            INSERT INTO movement_data.tags (
+                                movement_id,
+                                tag_value
+                            ) VALUES (
+                                @movementId,
+                                @tagValue
+                            ) ON CONFLICT DO NOTHING
+                        ", conn);
+                        insertCmd.Parameters.AddWithValue("@movementId", movementId);
+                        insertCmd.Parameters.AddWithValue("@tagValue", tagValue);
+                        
+                        await insertCmd.ExecuteNonQueryAsync();
+                    }
+                }
+            }
+        }
+    }
+
+    private int GetLookupId(string tableName, string value)
+    {
+        if (string.IsNullOrEmpty(value)) value = "Unknown";
+        
+        string cacheKey = $"{tableName}:{value}";
+        if (_lookupCache.TryGetValue(cacheKey, out var id))
+        {
+            return id;
+        }
+        
+        // If not in cache, return the ID for 'Unknown'
+        return _lookupCache[$"{tableName}:Unknown"];
+    }
+}

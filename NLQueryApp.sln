@@ -1,0 +1,55 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLQueryApp.Api", "NLQueryApp.Api\NLQueryApp.Api.csproj", "{1489F937-61DA-40E9-84B7-ABD580AEBC5D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLQueryApp.Web", "NLQueryApp.Web\NLQueryApp.Web.csproj", "{D0BC679B-714C-420A-92CB-DBA3347C2308}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLQueryApp.Core", "NLQueryApp.Core\NLQueryApp.Core.csproj", "{CEE849B8-B9E9-48CA-97E8-D67844D0132A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLQueryApp.LlmServices", "NLQueryApp.LlmServices\NLQueryApp.LlmServices.csproj", "{2E0033E4-C637-486E-97AE-1359DFD8A6F1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLQueryApp.Data", "NLQueryApp.Data\NLQueryApp.Data.csproj", "{7180223E-1D49-401F-AE3F-6C4A6DC7A166}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docker", "docker", "{BE3C698A-3FC6-43EE-9A10-FBBED3E25348}"
+	ProjectSection(SolutionItems) = preProject
+		docker-compose.yml = docker-compose.yml
+		api.Dockerfile = api.Dockerfile
+		web.Dockerfile = web.Dockerfile
+		nginx.conf = nginx.conf
+		.dockerignore = .dockerignore
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1489F937-61DA-40E9-84B7-ABD580AEBC5D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1489F937-61DA-40E9-84B7-ABD580AEBC5D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1489F937-61DA-40E9-84B7-ABD580AEBC5D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1489F937-61DA-40E9-84B7-ABD580AEBC5D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D0BC679B-714C-420A-92CB-DBA3347C2308}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D0BC679B-714C-420A-92CB-DBA3347C2308}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D0BC679B-714C-420A-92CB-DBA3347C2308}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D0BC679B-714C-420A-92CB-DBA3347C2308}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CEE849B8-B9E9-48CA-97E8-D67844D0132A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CEE849B8-B9E9-48CA-97E8-D67844D0132A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CEE849B8-B9E9-48CA-97E8-D67844D0132A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CEE849B8-B9E9-48CA-97E8-D67844D0132A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2E0033E4-C637-486E-97AE-1359DFD8A6F1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2E0033E4-C637-486E-97AE-1359DFD8A6F1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2E0033E4-C637-486E-97AE-1359DFD8A6F1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2E0033E4-C637-486E-97AE-1359DFD8A6F1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7180223E-1D49-401F-AE3F-6C4A6DC7A166}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7180223E-1D49-401F-AE3F-6C4A6DC7A166}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7180223E-1D49-401F-AE3F-6C4A6DC7A166}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7180223E-1D49-401F-AE3F-6C4A6DC7A166}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

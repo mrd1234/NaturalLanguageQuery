@@ -1,0 +1,316 @@
+﻿@page "/datasource/edit/{Id}"
+@page "/datasource/new"
+@using NLQueryApp.Web.Services
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<div class="container">
+    <h1>@(isNew ? "Create New Data Source" : "Edit Data Source")</h1>
+    
+    <div class="card">
+        <div class="card-body">
+            <EditForm Model="@dataSource" OnValidSubmit="HandleSubmit">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+                
+                <div class="mb-3">
+                    <label for="name" class="form-label">Name</label>
+                    <InputText id="name" @bind-Value="dataSource.Name" class="form-control" required />
+                </div>
+                
+                <div class="mb-3">
+                    <label for="description" class="form-label">Description</label>
+                    <InputTextArea id="description" @bind-Value="dataSource.Description" class="form-control" rows="3" />
+                </div>
+                
+                <div class="mb-3">
+                    <label for="type" class="form-label">Type</label>
+                    <InputSelect id="type" @bind-Value="dataSource.Type" class="form-control">
+                        <option value="postgres">PostgreSQL</option>
+                        <!-- Add other database types as they become supported -->
+                    </InputSelect>
+                </div>
+                
+                <h4>Connection Parameters</h4>
+                
+                @if (dataSource.Type == "postgres")
+                {
+                    <div class="mb-3">
+                        <label for="host" class="form-label">Host</label>
+                        <input id="host" type="text" class="form-control" @bind="Host" required />
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="port" class="form-label">Port</label>
+                        <input id="port" type="text" class="form-control" @bind="Port" />
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="database" class="form-label">Database</label>
+                        <input id="database" type="text" class="form-control" @bind="Database" required />
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="username" class="form-label">Username</label>
+                        <input id="username" type="text" class="form-control" @bind="Username" required />
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="password" class="form-label">Password</label>
+                        <input id="password" type="password" class="form-control" @bind="Password" required />
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="includedSchemas" class="form-label">Included Schemas (comma-separated)</label>
+                        <input id="includedSchemas" type="text" class="form-control" @bind="IncludedSchemas" placeholder="public, schema1, schema2" />
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="excludedTables" class="form-label">Excluded Tables (comma-separated)</label>
+                        <input id="excludedTables" type="text" class="form-control" @bind="ExcludedTables" placeholder="table1, table2, table3" />
+                    </div>
+                }
+                
+                <div class="mb-3">
+                    <button type="button" class="btn btn-info" @onclick="TestConnection" disabled="@isTesting">
+                        @if (isTesting)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        }
+                        Test Connection
+                    </button>
+                    @if (connectionTestResult != null)
+                    {
+                        <span class="ms-2 @(connectionTestResult.Value ? "text-success" : "text-danger")">
+                            @(connectionTestResult.Value ? "Connection successful" : "Connection failed")
+                        </span>
+                    }
+                </div>
+                
+                <div class="mb-3">
+                    <button type="submit" class="btn btn-primary" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        }
+                        Save
+                    </button>
+                    <button type="button" class="btn btn-secondary" @onclick="GoBack">Cancel</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+    
+    @if (!isNew)
+    {
+        <div class="card mt-4">
+            <div class="card-header">
+                <h3>Schema Context</h3>
+                <p class="text-muted">Provide additional context about this data source's schema to improve query generation.</p>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <textarea class="form-control" rows="10" @bind="schemaContext"></textarea>
+                </div>
+                <div class="mb-3">
+                    <button type="button" class="btn btn-primary" @onclick="SaveSchemaContext" disabled="@isSavingContext">
+                        @if (isSavingContext)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        }
+                        Save Context
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public string Id { get; set; } = "";
+    
+    private DataSourceDefinition dataSource = new();
+    private bool isNew = true;
+    private bool isSaving = false;
+    private bool isTesting = false;
+    private bool isSavingContext = false;
+    private bool? connectionTestResult = null;
+    private string schemaContext = "";
+    
+    // Connection parameters for PostgreSQL
+    private string Host { get; set; } = "";
+    private string Port { get; set; } = "5432";
+    private string Database { get; set; } = "";
+    private string Username { get; set; } = "";
+    private string Password { get; set; } = "";
+    private string IncludedSchemas { get; set; } = "";
+    private string ExcludedTables { get; set; } = "";
+    
+    protected override async Task OnInitializedAsync()
+    {
+        isNew = string.IsNullOrEmpty(Id) || Id.ToLower() == "new";
+        
+        if (!isNew)
+        {
+            try
+            {
+                dataSource = await ApiService.GetDataSourceAsync(Id);
+                
+                // Extract connection parameters
+                dataSource.ConnectionParameters.TryGetValue("Host", out var host);
+                Host = host ?? "";
+                
+                dataSource.ConnectionParameters.TryGetValue("Port", out var port);
+                Port = port ?? "5432";
+                
+                dataSource.ConnectionParameters.TryGetValue("Database", out var database);
+                Database = database ?? "";
+                
+                dataSource.ConnectionParameters.TryGetValue("Username", out var username);
+                Username = username ?? "";
+                
+                // Password is never returned from the API for security reasons
+                Password = "********";
+                
+                dataSource.ConnectionParameters.TryGetValue("IncludedSchemas", out var includedSchemas);
+                IncludedSchemas = includedSchemas ?? "";
+                
+                dataSource.ConnectionParameters.TryGetValue("ExcludedTables", out var excludedTables);
+                ExcludedTables = excludedTables ?? "";
+                
+                // Load schema context
+                schemaContext = await ApiService.GetDataSourceContextAsync(Id);
+            }
+            catch (Exception)
+            {
+                NavigationManager.NavigateTo("/datasources");
+            }
+        }
+    }
+    
+    private void UpdateConnectionParameters()
+    {
+        if (dataSource.Type == "postgres")
+        {
+            dataSource.ConnectionParameters["Host"] = Host;
+            dataSource.ConnectionParameters["Port"] = Port;
+            dataSource.ConnectionParameters["Database"] = Database;
+            dataSource.ConnectionParameters["Username"] = Username;
+            
+            // Only update password if it's not the placeholder
+            if (Password != "********")
+            {
+                dataSource.ConnectionParameters["Password"] = Password;
+            }
+            
+            if (!string.IsNullOrWhiteSpace(IncludedSchemas))
+            {
+                dataSource.ConnectionParameters["IncludedSchemas"] = IncludedSchemas;
+            }
+            else
+            {
+                dataSource.ConnectionParameters.Remove("IncludedSchemas");
+            }
+            
+            if (!string.IsNullOrWhiteSpace(ExcludedTables))
+            {
+                dataSource.ConnectionParameters["ExcludedTables"] = ExcludedTables;
+            }
+            else
+            {
+                dataSource.ConnectionParameters.Remove("ExcludedTables");
+            }
+        }
+    }
+    
+    private async Task TestConnection()
+    {
+        isTesting = true;
+        connectionTestResult = null;
+        
+        try
+        {
+            UpdateConnectionParameters();
+            
+            if (isNew)
+            {
+                // For new data sources, create a temporary ID
+                dataSource.Id = Guid.NewGuid().ToString();
+                await ApiService.CreateDataSourceAsync(dataSource);
+                connectionTestResult = true;
+                await ApiService.DeleteDataSourceAsync(dataSource.Id);
+                dataSource.Id = "";
+            }
+            else
+            {
+                // For existing data sources, use test connection endpoint
+                connectionTestResult = await ApiService.TestDataSourceConnectionAsync(dataSource.Id);
+            }
+        }
+        catch (Exception)
+        {
+            connectionTestResult = false;
+        }
+        finally
+        {
+            isTesting = false;
+        }
+    }
+    
+    private async Task HandleSubmit()
+    {
+        isSaving = true;
+        
+        try
+        {
+            UpdateConnectionParameters();
+            
+            if (isNew)
+            {
+                // Create new data source
+                var result = await ApiService.CreateDataSourceAsync(dataSource);
+                NavigationManager.NavigateTo("/datasources");
+            }
+            else
+            {
+                // Update existing data source
+                var result = await ApiService.UpdateDataSourceAsync(dataSource.Id, dataSource);
+                NavigationManager.NavigateTo("/datasources");
+            }
+        }
+        catch (Exception)
+        {
+            // Handle error
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+    
+    private async Task SaveSchemaContext()
+    {
+        if (isNew) return;
+        
+        isSavingContext = true;
+        
+        try
+        {
+            await ApiService.SetDataSourceContextAsync(dataSource.Id, schemaContext);
+        }
+        catch (Exception)
+        {
+            // Handle error
+        }
+        finally
+        {
+            isSavingContext = false;
+        }
+    }
+    
+    private void GoBack()
+    {
+        NavigationManager.NavigateTo("/datasources");
+    }
+}

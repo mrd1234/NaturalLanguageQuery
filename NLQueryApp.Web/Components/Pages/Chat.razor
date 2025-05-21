@@ -1,0 +1,473 @@
+﻿@page "/chat/{ConversationId:int}"
+@using NLQueryApp.Core
+@using NLQueryApp.Web.Services
+@using NLQueryApp.Core.Models
+@inject ApiService ApiService
+@inject IJSRuntime JSRuntime
+
+<div class="container-fluid h-100 d-flex flex-column">
+    <div class="row mb-3">
+        <div class="col-md-8">
+            <h2>@conversation?.Title</h2>
+            <div class="btn-group">
+                <button class="btn btn-outline-secondary btn-sm" @onclick="() => NavigationManager.NavigateTo('/'.ToString())">
+                    <i class="bi bi-arrow-left"></i> Back to Conversations
+                </button>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="d-flex justify-content-end">
+                <div class="dropdown me-2">
+                    <button class="btn btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        Data Source: @(selectedDataSource?.Name ?? "Select")
+                    </button>
+                    <ul class="dropdown-menu">
+                        @if (dataSources != null)
+                        {
+                        @foreach (var ds in dataSources)
+                        {
+                        <li><a class="dropdown-item @(selectedDataSource?.Id == ds.Id ? "active" : "")" @onclick="() => SelectDataSource(ds)">@ds.Name</a></li>
+                        }
+                        }
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" @onclick='() => NavigationManager.NavigateTo("/datasources")'>Manage Data Sources</a></li>
+                    </ul>
+                </div>
+
+                <div class="dropdown">
+                    <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                        LLM: @selectedLlmService
+                    </button>
+                    <ul class="dropdown-menu">
+                        <li><a class="dropdown-item @(selectedLlmService == "anthropic" ? "active" : "")" @onclick='() => selectedLlmService = "anthropic"'>Anthropic Claude</a></li>
+                        <li><a class="dropdown-item @(selectedLlmService == "ollama" ? "active" : "")" @onclick='() => selectedLlmService = "ollama"'>Ollama</a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row flex-grow-1 overflow-auto mb-3" id="message-container">
+        <div class="col">
+            @if (messages == null || !messages.Any())
+            {
+            <div class="alert alert-info">
+                <p>No messages yet. Start your conversation by asking a question about your data.</p>
+                @if (selectedDataSource == null)
+                {
+                <p><strong>Please select a data source first.</strong></p>
+                }
+            </div>
+            }
+            else
+            {
+            @foreach (var message in messages)
+            {
+            <div class="card mb-3 @(message.Role == "user" ? "bg-light ms-auto" : "bg-white"))" style="max-width: 80%;">
+                <div class="card-body">
+                    <p class="card-text">@message.Content</p>
+                    <p class="card-text">
+                        <small class="text-muted">@message.Timestamp.ToString("g") - @message.Role</small>
+                    </p>
+                </div>
+            </div>
+
+            @if (message.Role == "assistant" && queryResults.TryGetValue(message.Id, out var result) && result.Success && result.Data != null)
+            {
+            <div class="card mb-3 bg-white">
+                <div class="card-body">
+                    <h5 class="card-title">Query Results</h5>
+                    <div class="table-responsive">
+                        @if (result.Data.Any())
+                        {
+                        <table class="table table-sm table-hover">
+                            <thead>
+                            <tr>
+                                @foreach (var column in result.Data.First().Keys)
+                                {
+                                <th>@column</th>
+                                }
+                            </tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var row in result.Data)
+                            {
+                            <tr>
+                                @foreach (var value in row.Values)
+                                {
+                                <td>@(value?.ToString() ?? "NULL")</td>
+                                }
+                            </tr>
+                            }
+                            </tbody>
+                        </table>
+                        }
+                        else
+                        {
+                        <p>No results found.</p>
+                        }
+                    </div>
+                    <div class="small text-muted mt-2">
+                        <p><strong>SQL Query:</strong></p>
+                        <pre><code>@result.SqlQuery</code></pre>
+                    </div>
+                </div>
+            </div>
+            }
+            }
+            }
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col">
+            <div class="input-group">
+                <input type="text" class="form-control" placeholder="Ask a question about your data..."
+                       @bind="userInput" @bind:event="oninput" @onkeyup="HandleKeyUp"
+                       disabled="@(isProcessing || selectedDataSource == null)" />
+                <button class="btn btn-primary" @onclick="SendMessage"
+                        disabled="@(isProcessing || selectedDataSource == null || string.IsNullOrWhiteSpace(userInput))">
+                    @if (isProcessing)
+                    {
+                    <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                    }
+                    else
+                    {
+                    <span>Send</span>
+                    }
+                </button>
+            </div>
+            @if (selectedDataSource == null)
+            {
+            <div class="text-danger mt-2">
+                <small>Please select a data source to start asking questions.</small>
+            </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+[Parameter]
+public int ConversationId { get; set; }
+
+[Inject]
+public NavigationManager NavigationManager { get; set; }
+
+private Conversation? conversation;
+private List<ChatMessage> messages = new();
+private Dictionary<int, QueryResult> queryResults = new();
+private string userInput = "";
+private bool isProcessing = false;
+private string selectedLlmService = "anthropic";
+
+private List<DataSourceDefinition> dataSources;
+private DataSourceDefinition selectedDataSource;
+
+protected override async Task OnInitializedAsync()
+{
+try
+{
+// Load conversation
+conversation = await ApiService.GetConversationAsync(ConversationId);
+if (conversation.Messages != null)
+{
+messages = conversation.Messages.OrderBy(m => m.Timestamp).ToList();
+}
+
+// Load data sources
+dataSources = await ApiService.GetDataSourcesAsync();
+
+// Set default data source if available
+if (dataSources.Any())
+{
+selectedDataSource = dataSources.First();
+}
+}
+catch (Exception)
+{
+NavigationManager.NavigateTo("/");
+}
+}
+
+protected override async Task OnAfterRenderAsync(bool firstRender)
+{
+await JSRuntime.InvokeVoidAsync("scrollToBottom", "message-container");
+}
+
+private void SelectDataSource(DataSourceDefinition dataSource)
+{
+selectedDataSource = dataSource;
+}
+
+private async Task HandleKeyUp(KeyboardEventArgs e)
+{
+if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(userInput) && selectedDataSource != null && !isProcessing)
+{
+await SendMessage();
+}
+}
+
+private async Task SendMessage()
+{
+if (string.IsNullOrWhiteSpace(userInput) || selectedDataSource == null || isProcessing)
+return;
+
+isProcessing = true;
+
+// Add user message
+var userMessage = new ChatMessage
+{
+Role = "user",
+Content = userInput,
+ConversationId = ConversationId
+};
+
+var savedUserMessage = await ApiService.AddMessageAsync(ConversationId, userMessage);
+messages.Add(savedUserMessage);
+
+// Process the query
+var result = await ApiService.ProcessQueryAsync(userInput, selectedDataSource.Id, selectedLlmService);
+
+// Create assistant response
+string assistantContent;
+if (result.Success)
+{
+assistantContent = "Here are the results for your query.";
+}
+else
+{
+assistantContent = $"I encountered an error: {result.ErrorMessage}";
+}
+
+var assistantMessage = new ChatMessage
+{
+Role = "assistant",
+Content = assistantContent,
+ConversationId = ConversationId
+};
+
+var savedAssistantMessage = await ApiService.AddMessageAsync(ConversationId, assistantMessage);
+messages.Add(savedAssistantMessage);
+
+// Store the query result
+queryResults[savedAssistantMessage.Id] = result;
+
+// Clear input and reset state
+userInput = "";
+isProcessing = false;
+
+// Update UI
+StateHasChanged();
+await JSRuntime.InvokeVoidAsync("scrollToBottom", "message-container");
+}
+}
+
+
+@* @page "/chat/{ConversationId:int}" *@
+@* @using NLQueryApp.Web.Services *@
+@* @inject ApiService ApiService *@
+@* @inject IJSRuntime JSRuntime *@
+@* *@
+@* <div class="container-fluid h-100 d-flex flex-column"> *@
+@*     <div class="row mb-3"> *@
+@*         <div class="col"> *@
+@*             <h2>@conversation?.Title</h2> *@
+@*             <div class="btn-group"> *@
+@*                 <button class="btn btn-outline-secondary btn-sm" @onclick="() => NavigationManager.NavigateTo('/'.ToString())">Back to Conversations</button> *@
+@*                 <button class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown"> *@
+@*                     LLM: @selectedLlmService *@
+@*                 </button> *@
+@*                 <div class="dropdown-menu"> *@
+@*                     <button class="dropdown-item" @onclick='() => selectedLlmService = "anthropic"'>Anthropic Claude</button> *@
+@*                     <button class="dropdown-item" @onclick='() => selectedLlmService = "ollama"'>Ollama</button> *@
+@*                 </div> *@
+@*             </div> *@
+@*         </div> *@
+@*     </div> *@
+@*      *@
+@*     <div class="row flex-grow-1 overflow-auto mb-3" id="message-container"> *@
+@*         <div class="col"> *@
+@*             @if (messages == null || !messages.Any()) *@
+@*             { *@
+@*                 <div class="alert alert-info"> *@
+@*                     No messages yet. Start your conversation by asking a question about your data. *@
+@*                 </div> *@
+@*             } *@
+@*             else *@
+@*             { *@
+@*                 @foreach (var message in messages) *@
+@*                 { *@
+@*                     <div class="card mb-3 @(message.Role == "user" ? "bg-light ms-auto" : "bg-white"))" style="max-width: 80%;"> *@
+@*                         <div class="card-body"> *@
+@*                             <p class="card-text">@message.Content</p> *@
+@*                             <p class="card-text"> *@
+@*                                 <small class="text-muted">@message.Timestamp.ToString("g") - @message.Role</small> *@
+@*                             </p> *@
+@*                         </div> *@
+@*                     </div> *@
+@*                      *@
+@*                     @if (message.Role == "assistant" && queryResults.TryGetValue(message.Id, out var result) && result.Success && result.Data != null) *@
+@*                     { *@
+@*                         <div class="card mb-3 bg-white"> *@
+@*                             <div class="card-body"> *@
+@*                                 <h5 class="card-title">Query Results</h5> *@
+@*                                 <div class="table-responsive"> *@
+@*                                     @if (result.Data.Any()) *@
+@*                                     { *@
+@*                                         <table class="table table-sm table-hover"> *@
+@*                                             <thead> *@
+@*                                                 <tr> *@
+@*                                                     @foreach (var column in result.Data.First().Keys) *@
+@*                                                     { *@
+@*                                                         <th>@column</th> *@
+@*                                                     } *@
+@*                                                 </tr> *@
+@*                                             </thead> *@
+@*                                             <tbody> *@
+@*                                                 @foreach (var row in result.Data) *@
+@*                                                 { *@
+@*                                                     <tr> *@
+@*                                                         @foreach (var value in row.Values) *@
+@*                                                         { *@
+@*                                                             <td>@(value?.ToString() ?? "NULL")</td> *@
+@*                                                         } *@
+@*                                                     </tr> *@
+@*                                                 } *@
+@*                                             </tbody> *@
+@*                                         </table> *@
+@*                                     } *@
+@*                                     else *@
+@*                                     { *@
+@*                                         <p>No results found.</p> *@
+@*                                     } *@
+@*                                 </div> *@
+@*                                 <div class="small text-muted mt-2"> *@
+@*                                     <p><strong>SQL Query:</strong></p> *@
+@*                                     <pre><code>@result.SqlQuery</code></pre> *@
+@*                                 </div> *@
+@*                             </div> *@
+@*                         </div> *@
+@*                     } *@
+@*                 } *@
+@*             } *@
+@*         </div> *@
+@*     </div> *@
+@*      *@
+@*     <div class="row"> *@
+@*         <div class="col"> *@
+@*             <div class="input-group"> *@
+@*                 <input type="text" class="form-control" placeholder="Ask a question about your data..."  *@
+@*                        @bind="userInput" @bind:event="oninput" @onkeyup="HandleKeyUp" /> *@
+@*                 <button class="btn btn-primary" @onclick="SendMessage" disabled="@isProcessing"> *@
+@*                     @if (isProcessing) *@
+@*                     { *@
+@*                         <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> *@
+@*                     } *@
+@*                     else *@
+@*                     { *@
+@*                         <span>Send</span> *@
+@*                     } *@
+@*                 </button> *@
+@*             </div> *@
+@*         </div> *@
+@*     </div> *@
+@* </div> *@
+@* *@
+@* @code { *@
+@*     [Parameter] *@
+@*     public int ConversationId { get; set; } *@
+@*      *@
+@*     [Inject] *@
+@*     public NavigationManager NavigationManager { get; set; } *@
+@*      *@
+@*     private Conversation? conversation; *@
+@*     private List<ChatMessage> messages = new(); *@
+@*     private Dictionary<int, QueryResult> queryResults = new(); *@
+@*     private string userInput = ""; *@
+@*     private bool isProcessing = false; *@
+@*     private string selectedLlmService = "anthropic"; *@
+@*      *@
+@*     protected override async Task OnInitializedAsync() *@
+@*     { *@
+@*         try *@
+@*         { *@
+@*             conversation = await ApiService.GetConversationAsync(ConversationId); *@
+@*             if (conversation.Messages != null) *@
+@*             { *@
+@*                 messages = conversation.Messages.OrderBy(m => m.Timestamp).ToList(); *@
+@*             } *@
+@*         } *@
+@*         catch (Exception) *@
+@*         { *@
+@*             NavigationManager.NavigateTo("/"); *@
+@*         } *@
+@*     } *@
+@*      *@
+@*     protected override async Task OnAfterRenderAsync(bool firstRender) *@
+@*     { *@
+@*         await JSRuntime.InvokeVoidAsync("scrollToBottom", "message-container"); *@
+@*     } *@
+@*      *@
+@*     private async Task HandleKeyUp(KeyboardEventArgs e) *@
+@*     { *@
+@*         if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(userInput)) *@
+@*         { *@
+@*             await SendMessage(); *@
+@*         } *@
+@*     } *@
+@*      *@
+@*     private async Task SendMessage() *@
+@*     { *@
+@*         if (string.IsNullOrWhiteSpace(userInput) || isProcessing) *@
+@*             return; *@
+@*          *@
+@*         isProcessing = true; *@
+@*          *@
+@*         // Add user message *@
+@*         var userMessage = new ChatMessage *@
+@*         { *@
+@*             Role = "user", *@
+@*             Content = userInput, *@
+@*             ConversationId = ConversationId *@
+@*         }; *@
+@*          *@
+@*         var savedUserMessage = await ApiService.AddMessageAsync(ConversationId, userMessage); *@
+@*         messages.Add(savedUserMessage); *@
+@*          *@
+@*         // Process the query *@
+@*         var result = await ApiService.ProcessQueryAsync(userInput, selectedLlmService); *@
+@*          *@
+@*         // Create assistant response *@
+@*         string assistantContent; *@
+@*         if (result.Success) *@
+@*         { *@
+@*             assistantContent = "Here are the results for your query."; *@
+@*         } *@
+@*         else *@
+@*         { *@
+@*             assistantContent = $"I encountered an error: {result.ErrorMessage}"; *@
+@*         } *@
+@*          *@
+@*         var assistantMessage = new ChatMessage *@
+@*         { *@
+@*             Role = "assistant", *@
+@*             Content = assistantContent, *@
+@*             ConversationId = ConversationId *@
+@*         }; *@
+@*          *@
+@*         var savedAssistantMessage = await ApiService.AddMessageAsync(ConversationId, assistantMessage); *@
+@*         messages.Add(savedAssistantMessage); *@
+@*          *@
+@*         // Store the query result *@
+@*         queryResults[savedAssistantMessage.Id] = result; *@
+@*          *@
+@*         // Clear input and reset state *@
+@*         userInput = ""; *@
+@*         isProcessing = false; *@
+@*          *@
+@*         // Update UI *@
+@*         StateHasChanged(); *@
+@*         await JSRuntime.InvokeVoidAsync("scrollToBottom", "message-container"); *@
+@*     } *@
+@* } *@

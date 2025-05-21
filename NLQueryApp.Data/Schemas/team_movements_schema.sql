@@ -1,0 +1,223 @@
+﻿-- Create schemas
+CREATE SCHEMA IF NOT EXISTS team_movements;
+CREATE SCHEMA IF NOT EXISTS lookup;
+CREATE SCHEMA IF NOT EXISTS app;
+
+-- Lookup tables
+CREATE TABLE lookup.movement_status (
+                                        status_id SERIAL PRIMARY KEY,
+                                        status_name VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.movement_type (
+                                      type_id SERIAL PRIMARY KEY,
+                                      type_name VARCHAR(100) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.employee_group (
+                                       group_id SERIAL PRIMARY KEY,
+                                       group_name VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.employee_subgroup (
+                                          subgroup_id SERIAL PRIMARY KEY,
+                                          subgroup_name VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.banner (
+                               banner_id SERIAL PRIMARY KEY,
+                               banner_name VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.brand (
+                              brand_id SERIAL PRIMARY KEY,
+                              brand_code VARCHAR(20),
+                              brand_name VARCHAR(100) NOT NULL,
+                              brand_display_name VARCHAR(100),
+                              group_code VARCHAR(20),
+                              group_name VARCHAR(100)
+);
+
+CREATE TABLE lookup.department (
+                                   department_id SERIAL PRIMARY KEY,
+                                   department_code VARCHAR(20) NOT NULL UNIQUE,
+                                   department_name VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE lookup.cost_centre (
+                                    cost_centre_id SERIAL PRIMARY KEY,
+                                    cost_centre_code VARCHAR(20) NOT NULL UNIQUE,
+                                    cost_centre_name VARCHAR(100) NOT NULL,
+                                    address_formatted TEXT,
+                                    latitude DECIMAL(9,6),
+                                    longitude DECIMAL(9,6)
+);
+
+CREATE TABLE lookup.role_type (
+                                  role_id SERIAL PRIMARY KEY,
+                                  role_name VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.job_role (
+                                 job_role_id SERIAL PRIMARY KEY,
+                                 job_role_name VARCHAR(100) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.mutual_flag (
+                                    flag_id SERIAL PRIMARY KEY,
+                                    flag_name VARCHAR(100) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.break_type (
+                                   break_id SERIAL PRIMARY KEY,
+                                   break_name VARCHAR(50) NOT NULL UNIQUE
+);
+
+CREATE TABLE lookup.history_event_type (
+                                           event_type_id SERIAL PRIMARY KEY,
+                                           event_type_name VARCHAR(100) NOT NULL UNIQUE
+);
+
+-- Core entity tables
+CREATE TABLE team_movements.position (
+                                         position_id VARCHAR(20) PRIMARY KEY,
+                                         title VARCHAR(100) NOT NULL,
+                                         banner_id INTEGER REFERENCES lookup.banner(banner_id),
+                                         base_hours NUMERIC(5,2),
+                                         brand_id INTEGER REFERENCES lookup.brand(brand_id),
+                                         company_code VARCHAR(20),
+                                         company_name VARCHAR(100),
+                                         cost_centre_id INTEGER REFERENCES lookup.cost_centre(cost_centre_id),
+                                         country VARCHAR(50),
+                                         employee_subgroup_id INTEGER REFERENCES lookup.employee_subgroup(subgroup_id),
+                                         job_role_id INTEGER REFERENCES lookup.job_role(job_role_id),
+                                         department_id INTEGER REFERENCES lookup.department(department_id),
+                                         salary_award_benchmark NUMERIC(10,2),
+                                         salary_max NUMERIC(10,2),
+                                         salary_min NUMERIC(10,2),
+                                         leave_entitlement VARCHAR(20),
+                                         leave_entitlement_name VARCHAR(100),
+                                         sti_scheme VARCHAR(20),
+                                         pay_scale_group VARCHAR(50),
+                                         pay_scale_level VARCHAR(50),
+                                         car_eligibility VARCHAR(50),
+                                         sti_target INTEGER
+);
+
+CREATE TABLE team_movements.employee (
+                                         employee_id VARCHAR(20) PRIMARY KEY,
+                                         name VARCHAR(100) NOT NULL,
+                                         current_position_id VARCHAR(20) REFERENCES team_movements.position(position_id),
+                                         photo_url TEXT
+);
+
+CREATE TABLE team_movements.movement (
+                                         movement_id VARCHAR(100) PRIMARY KEY,
+                                         employee_id VARCHAR(20) NOT NULL REFERENCES team_movements.employee(employee_id),
+                                         status_id INTEGER NOT NULL REFERENCES lookup.movement_status(status_id),
+                                         movement_type_id INTEGER NOT NULL REFERENCES lookup.movement_type(type_id),
+                                         start_date DATE NOT NULL,
+                                         end_date DATE,
+                                         created_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                         workflow_definition_id VARCHAR(100),
+                                         workflow_version INTEGER,
+                                         workflow_archived BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE team_movements.movement_tag (
+                                             movement_id VARCHAR(100) REFERENCES team_movements.movement(movement_id),
+                                             tag VARCHAR(100) NOT NULL,
+                                             PRIMARY KEY (movement_id, tag)
+);
+
+CREATE TABLE team_movements.participant (
+                                            participant_id SERIAL PRIMARY KEY,
+                                            movement_id VARCHAR(100) NOT NULL REFERENCES team_movements.movement(movement_id),
+                                            employee_id VARCHAR(20) NOT NULL REFERENCES team_movements.employee(employee_id),
+                                            position_id VARCHAR(20) REFERENCES team_movements.position(position_id),
+                                            position_title VARCHAR(100),
+                                            banner_id INTEGER REFERENCES lookup.banner(banner_id),
+                                            brand_display_name VARCHAR(100),
+                                            department_id INTEGER REFERENCES lookup.department(department_id),
+                                            cost_centre_id INTEGER REFERENCES lookup.cost_centre(cost_centre_id),
+                                            role_id INTEGER NOT NULL REFERENCES lookup.role_type(role_id)
+);
+
+CREATE TABLE team_movements.job_info (
+                                         job_info_id SERIAL PRIMARY KEY,
+                                         movement_id VARCHAR(100) NOT NULL REFERENCES team_movements.movement(movement_id),
+                                         is_current BOOLEAN NOT NULL,  -- TRUE for currentJobInfo, FALSE for newJobInfo
+                                         working_days_per_week NUMERIC(3,2),
+                                         base_hours NUMERIC(5,2),
+                                         employee_group_id INTEGER REFERENCES lookup.employee_group(group_id),
+                                         position_id VARCHAR(20) REFERENCES team_movements.position(position_id),
+                                         manager_employee_id VARCHAR(20) REFERENCES team_movements.employee(employee_id),
+                                         start_date DATE,
+                                         employee_movement_type VARCHAR(50),
+                                         sti_scheme VARCHAR(20),
+                                         pay_scale_group VARCHAR(50),
+                                         pay_scale_level VARCHAR(50),
+                                         salary NUMERIC(10,2),
+                                         discretionary_allowance NUMERIC(10,2),
+                                         end_date DATE
+);
+
+CREATE TABLE team_movements.contract (
+                                         contract_id SERIAL PRIMARY KEY,
+                                         movement_id VARCHAR(100) NOT NULL REFERENCES team_movements.movement(movement_id),
+                                         is_current BOOLEAN NOT NULL  -- TRUE for currentContract, FALSE for newContract
+);
+
+CREATE TABLE team_movements.contract_mutual_flag (
+                                                     contract_id INTEGER REFERENCES team_movements.contract(contract_id),
+                                                     flag_id INTEGER REFERENCES lookup.mutual_flag(flag_id),
+                                                     PRIMARY KEY (contract_id, flag_id)
+);
+
+CREATE TABLE team_movements.contract_week (
+                                              week_id SERIAL PRIMARY KEY,
+                                              contract_id INTEGER NOT NULL REFERENCES team_movements.contract(contract_id),
+                                              week_number INTEGER NOT NULL
+);
+
+CREATE TABLE team_movements.contract_shift (
+                                               shift_id SERIAL PRIMARY KEY,
+                                               week_id INTEGER NOT NULL REFERENCES team_movements.contract_week(week_id),
+                                               day_of_week VARCHAR(3) NOT NULL, -- 'mon', 'tue', etc.
+                                               start_time TIME NOT NULL,
+                                               end_time TIME NOT NULL
+);
+
+CREATE TABLE team_movements.shift_break (
+                                            shift_id INTEGER REFERENCES team_movements.contract_shift(shift_id),
+                                            break_id INTEGER REFERENCES lookup.break_type(break_id),
+                                            PRIMARY KEY (shift_id, break_id)
+);
+
+CREATE TABLE team_movements.movement_history (
+                                                 history_id SERIAL PRIMARY KEY,
+                                                 movement_id VARCHAR(100) NOT NULL REFERENCES team_movements.movement(movement_id),
+                                                 event_type_id INTEGER NOT NULL REFERENCES lookup.history_event_type(event_type_id),
+                                                 created_date TIMESTAMP NOT NULL,
+                                                 created_by VARCHAR(20),
+                                                 created_by_name VARCHAR(100),
+                                                 participant_id INTEGER REFERENCES team_movements.participant(participant_id),
+                                                 notes TEXT,
+                                                 additional_data JSONB  -- Store event-specific additional data
+);
+
+-- -- App tables for the chat application
+-- CREATE TABLE app.conversations (
+--                                    id SERIAL PRIMARY KEY,
+--                                    title VARCHAR(100) NOT NULL,
+--                                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--                                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+-- );
+-- 
+-- CREATE TABLE app.messages (
+--                               id SERIAL PRIMARY KEY,
+--                               conversation_id INTEGER NOT NULL REFERENCES app.conversations(id) ON DELETE CASCADE,
+--                               role VARCHAR(50) NOT NULL,  -- 'user' or 'assistant'
+--                               content TEXT NOT NULL,
+--                               timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+-- );

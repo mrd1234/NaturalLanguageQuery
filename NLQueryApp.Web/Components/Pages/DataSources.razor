@@ -1,0 +1,163 @@
+﻿@page "/datasources"
+@using NLQueryApp.Web.Services
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<div class="container">
+    <h1>Data Sources</h1>
+    
+    <div class="row mb-4">
+        <div class="col">
+            <button class="btn btn-primary" @onclick="CreateNewDataSource">
+                <i class="bi bi-plus-circle"></i> New Data Source
+            </button>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col">
+            @if (dataSources == null)
+            {
+                <div class="d-flex justify-content-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            }
+            else if (!dataSources.Any())
+            {
+                <div class="alert alert-info">
+                    <p>No data sources configured yet. Create your first data source to get started!</p>
+                </div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Description</th>
+                                <th>Last Updated</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var dataSource in dataSources)
+                            {
+                                <tr>
+                                    <td>@dataSource.Name</td>
+                                    <td>@dataSource.Type</td>
+                                    <td>@dataSource.Description</td>
+                                    <td>@dataSource.LastUpdated.ToString("g")</td>
+                                    <td>
+                                        <div class="btn-group">
+                                            <button class="btn btn-sm btn-outline-primary" @onclick="() => EditDataSource(dataSource.Id)">
+                                                <i class="bi bi-pencil"></i> Edit
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => ConfirmDelete(dataSource)">
+                                                <i class="bi bi-trash"></i> Delete
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+    
+    @if (showDeleteConfirmation)
+    {
+        <div class="modal fade show" style="display: block;" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Confirm Delete</h5>
+                        <button type="button" class="btn-close" @onclick="CancelDelete"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Are you sure you want to delete data source "@dataSourceToDelete?.Name"?</p>
+                        <p class="text-danger">This action cannot be undone.</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" @onclick="CancelDelete">Cancel</button>
+                        <button type="button" class="btn btn-danger" @onclick="DeleteDataSource">
+                            @if (isDeleting)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            }
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-backdrop fade show"></div>
+    }
+</div>
+
+@code {
+    private List<DataSourceDefinition> dataSources;
+    private bool showDeleteConfirmation = false;
+    private DataSourceDefinition dataSourceToDelete;
+    private bool isDeleting = false;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataSources();
+    }
+    
+    private async Task LoadDataSources()
+    {
+        dataSources = await ApiService.GetDataSourcesAsync();
+    }
+    
+    private void CreateNewDataSource()
+    {
+        NavigationManager.NavigateTo("/datasource/new");
+    }
+    
+    private void EditDataSource(string id)
+    {
+        NavigationManager.NavigateTo($"/datasource/edit/{id}");
+    }
+    
+    private void ConfirmDelete(DataSourceDefinition dataSource)
+    {
+        dataSourceToDelete = dataSource;
+        showDeleteConfirmation = true;
+    }
+    
+    private void CancelDelete()
+    {
+        showDeleteConfirmation = false;
+        dataSourceToDelete = null;
+    }
+    
+    private async Task DeleteDataSource()
+    {
+        if (dataSourceToDelete == null) return;
+        
+        isDeleting = true;
+        
+        try
+        {
+            await ApiService.DeleteDataSourceAsync(dataSourceToDelete.Id);
+            await LoadDataSources();
+        }
+        catch (Exception)
+        {
+            // Handle error
+        }
+        finally
+        {
+            isDeleting = false;
+            showDeleteConfirmation = false;
+            dataSourceToDelete = null;
+        }
+    }
+}

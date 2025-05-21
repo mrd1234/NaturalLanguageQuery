@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+**/node_modules/
+**/.vs/
+**/.vscode/
+**/.git/
+**/publish/
+**/logs/
+**/*.user
+**/*.suo
+**/*.dll
+**/*.pdb
+**/.DS_Store

@@ -1,0 +1,62 @@
+﻿@page "/"
+@using NLQueryApp.Core
+@using NLQueryApp.Web.Services
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+
+<div class="container">
+    <h1>Natural Language Query App</h1>
+    <div class="row mb-4">
+        <div class="col">
+            <button class="btn btn-primary" @onclick="CreateNewConversation">New Conversation</button>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col">
+            <h2>Recent Conversations</h2>
+            @if (conversations == null)
+            {
+                <p>Loading...</p>
+            }
+            else if (!conversations.Any())
+            {
+                <p>No conversations yet. Start a new one!</p>
+            }
+            else
+            {
+                <div class="list-group">
+                    @foreach (var conversation in conversations)
+                    {
+                        <a href="/chat/@conversation.Id" class="list-group-item list-group-item-action">
+                            <div class="d-flex w-100 justify-content-between">
+                                <h5 class="mb-1">@conversation.Title</h5>
+                                <small>@conversation.UpdatedAt.ToString("g")</small>
+                            </div>
+                        </a>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<Conversation>? conversations;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConversations();
+    }
+
+    private async Task LoadConversations()
+    {
+        conversations = await ApiService.GetConversationsAsync();
+    }
+
+    private async Task CreateNewConversation()
+    {
+        var newConversation = await ApiService.CreateConversationAsync("New Conversation");
+        NavigationManager.NavigateTo($"/chat/{newConversation.Id}");
+    }
+}
