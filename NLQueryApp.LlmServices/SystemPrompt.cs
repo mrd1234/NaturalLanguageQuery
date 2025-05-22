@@ -42,6 +42,13 @@ CRITICAL SQL RULES:
 11. Ensure you are using function like json_build_object in your queries to ensure results are in a JSON format.
 12. There should be a single column with name `json_value` do not wrap JSON inside object with property ""json_value"".
 13. Limit result rows to a maximum of 100.
+    
+    
+IMPORTANT: Always respond with valid JSON in exactly this format:
+{{
+    ""sqlQuery"": ""your generated query here"",
+    ""explanation"": ""brief explanation of the query""
+}}
 ";
 
 var prompt = @$" 
