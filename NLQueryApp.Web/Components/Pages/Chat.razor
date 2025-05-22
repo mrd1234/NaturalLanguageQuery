@@ -1,7 +1,6 @@
 ﻿@page "/chat/{ConversationId:int}"
 @using NLQueryApp.Core
 @using NLQueryApp.Web.Services
-@using NLQueryApp.Core.Models
 @inject ApiService ApiService
 @inject IJSRuntime JSRuntime
 
@@ -159,7 +158,7 @@ private List<ChatMessage> messages = new();
 private Dictionary<int, QueryResult> queryResults = new();
 private string userInput = "";
 private bool isProcessing = false;
-private string selectedLlmService = "anthropic";
+private string selectedLlmService = "ollama";
 
 private List<DataSourceDefinition> dataSources;
 private DataSourceDefinition selectedDataSource;

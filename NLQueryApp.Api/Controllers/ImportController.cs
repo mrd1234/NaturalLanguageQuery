@@ -1,5 +1,4 @@
-﻿using System.Text.Json.Serialization;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using NLQueryApp.Api.Controllers.Import;
 
 namespace NLQueryApp.Api.Controllers;
@@ -95,7 +94,7 @@ public class ImportController : ControllerBase
                 .ToDictionary(g => g.Key, g => g.Take(5).ToList());
             
             // Calculate success percentage
-            double successRate = files.Length > 0 
+            var successRate = files.Length > 0 
                 ? (double)(importer.ImportedCount) / files.Length * 100 
                 : 0;
             
@@ -193,7 +192,7 @@ public class ImportController : ControllerBase
         try
         {
             // Get error log directory
-            string errorLogDir = "import_errors";
+            var errorLogDir = "import_errors";
             if (!Directory.Exists(errorLogDir))
             {
                 return BadRequest(new { 
@@ -218,11 +217,11 @@ public class ImportController : ControllerBase
             {
                 try
                 {
-                    string content = await System.IO.File.ReadAllTextAsync(logFile);
+                    var content = await System.IO.File.ReadAllTextAsync(logFile);
                     var match = System.Text.RegularExpressions.Regex.Match(content, @"File: (.+?)[\r\n]");
                     if (match.Success && match.Groups.Count > 1)
                     {
-                        string originalFile = match.Groups[1].Value;
+                        var originalFile = match.Groups[1].Value;
                         if (System.IO.File.Exists(originalFile))
                         {
                             filesToRetry.Add(originalFile);
@@ -316,8 +315,8 @@ public class ImportController : ControllerBase
             var tagCount = Convert.ToInt32(await cmd6.ExecuteScalarAsync() ?? 0);
             
             // Get error log count
-            string errorLogDir = "import_errors";
-            int errorLogCount = Directory.Exists(errorLogDir) 
+            var errorLogDir = "import_errors";
+            var errorLogCount = Directory.Exists(errorLogDir) 
                 ? Directory.GetFiles(errorLogDir, "*.log").Length 
                 : 0;
             

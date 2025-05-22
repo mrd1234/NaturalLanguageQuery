@@ -15,6 +15,13 @@
 
 ## CORRECT EXAMPLE QUERIES
 
+### Count of movements grouped by movement type
+SELECT mt.type_name, COUNT(m.id) AS movement_count  -- Count movements, not types
+FROM team_movements.movement_types mt
+JOIN team_movements.movements m ON mt.id = m.movement_type_id
+GROUP BY mt.type_name, mt.id  -- Include all non-aggregated columns
+ORDER BY movement_count DESC;
+
 ### Count of each movement type
 SELECT mt.type_name, COUNT(*) as count
 FROM team_movements.movement_types mt
@@ -46,3 +53,65 @@ team_movements.history_event_types comp_type ON completion.event_type_id = comp_
 WHERE
 init_type.event_type_name = 'MovementInitiated'
 AND comp_type.event_type_name = 'MovementCompleted';
+
+### Find movements with specific status
+SELECT m.*
+FROM team_movements.movements m
+JOIN team_movements.statuses s ON m.status_id = s.id
+WHERE s.status_name = 'Completed'
+
+### Count movements by status
+SELECT s.status_name, COUNT(*) as movement_count
+FROM team_movements.movements m
+JOIN team_movements.statuses s ON m.status_id = s.id
+GROUP BY s.status_name
+ORDER BY movement_count DESC
+
+### Get Last History Event Per Movement
+WITH LastEvents AS (
+    SELECT 
+        he.*,
+        ROW_NUMBER() OVER (PARTITION BY he.movement_id ORDER BY he.created_date DESC) as rn
+    FROM 
+        team_movements.history_events he
+    JOIN 
+        team_movements.movements m ON he.movement_id = m.id
+    JOIN 
+        team_movements.statuses s ON m.status_id = s.id
+    WHERE 
+        s.status_name = 'Aborted'
+)
+SELECT * FROM LastEvents WHERE rn = 1;
+
+### Get Last History Event Per Movement (alternative approach with subquery)
+SELECT he.*
+FROM team_movements.history_events he
+JOIN (
+SELECT movement_id, MAX(created_date) as max_date
+FROM team_movements.history_events
+GROUP BY movement_id
+) latest ON he.movement_id = latest.movement_id AND he.created_date = latest.max_date
+JOIN team_movements.movements m ON he.movement_id = m.id
+JOIN team_movements.statuses s ON m.status_id = s.id
+WHERE s.status_name = 'Aborted';
+
+
+## CRITICAL QUERY PATTERNS
+
+1. NEVER use 'status' in the movements table - it doesn't exist!
+    - INCORRECT: SELECT * FROM team_movements.movements WHERE status = 'Completed'
+    - CORRECT:
+      SELECT m.*
+      FROM team_movements.movements m
+      JOIN team_movements.statuses s ON m.status_id = s.id
+      WHERE s.status_name = 'Completed'
+
+2. NEVER use parameter placeholders like $1, @param, etc.
+    - INCORRECT: WHERE s.status_name = $1
+    - CORRECT: WHERE s.status_name = 'Completed'
+
+3. Common movement status query pattern:
+   SELECT m.movement_id, m.employee_id, m.start_date, s.status_name
+   FROM team_movements.movements m
+   JOIN team_movements.statuses s ON m.status_id = s.id
+   WHERE s.status_name = 'Completed'

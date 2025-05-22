@@ -1,6 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using NLQueryApp.Core;
-using NLQueryApp.Core.Models;
 
 namespace NLQueryApp.Api.Controllers;
 

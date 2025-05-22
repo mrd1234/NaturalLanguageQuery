@@ -137,10 +137,10 @@ public class DataImporter
                 return result;
         
             // Try 24-hour format (military time)
-            if (timeString.Length == 4 && int.TryParse(timeString, out int militaryTime))
+            if (timeString.Length == 4 && int.TryParse(timeString, out var militaryTime))
             {
-                int hours = militaryTime / 100;
-                int minutes = militaryTime % 100;
+                var hours = militaryTime / 100;
+                var minutes = militaryTime % 100;
             
                 if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60)
                     return new TimeSpan(hours, minutes, 0);
@@ -280,8 +280,8 @@ public class DataImporter
         catch (JsonException jex)
         {
             Interlocked.Increment(ref _errorCount);
-            string fileName = Path.GetFileName(filePath);
-            string movementId = ExtractMovementIdFromFileName(fileName);
+            var fileName = Path.GetFileName(filePath);
+            var movementId = ExtractMovementIdFromFileName(fileName);
             Console.WriteLine($"Error parsing JSON in file {fileName} (MovementID: {movementId}): {jex.Message}");
             
             // Log more details if needed
@@ -290,11 +290,11 @@ public class DataImporter
         catch (Exception ex)
         {
             Interlocked.Increment(ref _errorCount);
-            string fileName = Path.GetFileName(filePath);
-            string movementId = ExtractMovementIdFromFileName(fileName);
+            var fileName = Path.GetFileName(filePath);
+            var movementId = ExtractMovementIdFromFileName(fileName);
             
             // Unwrap nested exceptions to get to the root cause
-            Exception innermost = ex;
+            var innermost = ex;
             while (innermost.InnerException != null)
             {
                 innermost = innermost.InnerException;
@@ -316,7 +316,7 @@ public class DataImporter
         // Filename format is typically: tms_team_movements_team_movement_[MOVEMENT_ID]_[TIMESTAMP].json
         try
         {
-            string noExtension = Path.GetFileNameWithoutExtension(fileName);
+            var noExtension = Path.GetFileNameWithoutExtension(fileName);
             string[] parts = noExtension.Split('_');
             if (parts.Length >= 6)
             {
@@ -334,11 +334,11 @@ public class DataImporter
     {
         try
         {
-            string logDir = "import_errors";
+            var logDir = "import_errors";
             Directory.CreateDirectory(logDir);
             
-            string fileName = Path.GetFileName(filePath);
-            string logFile = Path.Combine(logDir, $"{fileName}_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+            var fileName = Path.GetFileName(filePath);
+            var logFile = Path.Combine(logDir, $"{fileName}_{DateTime.Now:yyyyMMdd_HHmmss}.log");
             
             using var writer = new StreamWriter(logFile);
             writer.WriteLine($"Error Type: {errorType}");
@@ -367,7 +367,7 @@ public class DataImporter
             {
                 writer.WriteLine();
                 writer.WriteLine("File Sample (first 2000 chars):");
-                string content = File.ReadAllText(filePath);
+                var content = File.ReadAllText(filePath);
                 writer.WriteLine(content.Length > 2000 ? content.Substring(0, 2000) + "..." : content);
             }
             catch
@@ -384,12 +384,12 @@ public class DataImporter
     
     private async Task<int> ImportMovement(NpgsqlConnection conn, JsonElement root)
     {
-        string movementId = root.GetProperty("movementId").GetString() ?? 
-                            throw new Exception("Movement ID is required");
+        var movementId = root.GetProperty("movementId").GetString() ?? 
+                         throw new Exception("Movement ID is required");
         
-        string employeeId = root.GetProperty("employeeId").GetString() ?? "Unknown";
+        var employeeId = root.GetProperty("employeeId").GetString() ?? "Unknown";
         
-        int movementTypeId = GetLookupId(
+        var movementTypeId = GetLookupId(
             "movement_types", 
             root.TryGetProperty("movementType", out var movementTypeElement) && 
             movementTypeElement.ValueKind == JsonValueKind.String
@@ -397,7 +397,7 @@ public class DataImporter
                 : "Unknown"
         );
         
-        int statusId = GetLookupId(
+        var statusId = GetLookupId(
             "statuses", 
             root.TryGetProperty("status", out var statusElement) && 
             statusElement.ValueKind == JsonValueKind.String
@@ -418,9 +418,9 @@ public class DataImporter
             endDate = SafeParseDateTime(endDateElement, "endDate");
         }
         
-        string workflowDefinitionId = "Unknown";
-        int workflowVersion = 0;
-        bool workflowArchived = false;
+        var workflowDefinitionId = "Unknown";
+        var workflowVersion = 0;
+        var workflowArchived = false;
         
         if (root.TryGetProperty("workflow", out var workflowElement) && 
             workflowElement.ValueKind == JsonValueKind.Object)
@@ -537,27 +537,27 @@ public class DataImporter
         {
             foreach (var participant in participantsElement.EnumerateArray())
             {
-                string employeeId = participant.TryGetProperty("employeeId", out var empIdElement) && 
-                                   empIdElement.ValueKind == JsonValueKind.String
+                var employeeId = participant.TryGetProperty("employeeId", out var empIdElement) && 
+                                 empIdElement.ValueKind == JsonValueKind.String
                     ? empIdElement.GetString() ?? "Unknown"
                     : "Unknown";
                 
-                string name = participant.TryGetProperty("name", out var nameElement) && 
-                             nameElement.ValueKind == JsonValueKind.String
+                var name = participant.TryGetProperty("name", out var nameElement) && 
+                           nameElement.ValueKind == JsonValueKind.String
                     ? nameElement.GetString() ?? ""
                     : "";
                 
-                string positionId = participant.TryGetProperty("position", out var posElement) && 
-                                   posElement.ValueKind == JsonValueKind.String
+                var positionId = participant.TryGetProperty("position", out var posElement) && 
+                                 posElement.ValueKind == JsonValueKind.String
                     ? posElement.GetString() ?? ""
                     : "";
                 
-                string positionTitle = participant.TryGetProperty("positionTitle", out var posTitleElement) && 
-                                      posTitleElement.ValueKind == JsonValueKind.String
+                var positionTitle = participant.TryGetProperty("positionTitle", out var posTitleElement) && 
+                                    posTitleElement.ValueKind == JsonValueKind.String
                     ? posTitleElement.GetString() ?? ""
                     : "";
                 
-                int bannerId = GetLookupId(
+                var bannerId = GetLookupId(
                     "banners", 
                     participant.TryGetProperty("banner", out var bannerElement) && 
                     bannerElement.ValueKind == JsonValueKind.String
@@ -565,7 +565,7 @@ public class DataImporter
                         : "Unknown"
                 );
                 
-                int brandId = GetLookupId(
+                var brandId = GetLookupId(
                     "brands", 
                     participant.TryGetProperty("brandDisplayName", out var brandElement) && 
                     brandElement.ValueKind == JsonValueKind.String
@@ -573,7 +573,7 @@ public class DataImporter
                         : "Unknown"
                 );
                 
-                int departmentId = GetLookupId(
+                var departmentId = GetLookupId(
                     "departments", 
                     participant.TryGetProperty("payingDepartment", out var deptElement) && 
                     deptElement.ValueKind == JsonValueKind.String
@@ -581,7 +581,7 @@ public class DataImporter
                         : "Unknown"
                 );
                 
-                int costCentreId = GetLookupId(
+                var costCentreId = GetLookupId(
                     "cost_centres", 
                     participant.TryGetProperty("costCentre", out var ccElement) && 
                     ccElement.ValueKind == JsonValueKind.String
@@ -589,7 +589,7 @@ public class DataImporter
                         : "Unknown"
                 );
                 
-                int roleId = GetLookupId(
+                var roleId = GetLookupId(
                     "participant_roles", 
                     participant.TryGetProperty("role", out var roleElement) && 
                     roleElement.ValueKind == JsonValueKind.String
@@ -597,8 +597,8 @@ public class DataImporter
                         : "Unknown"
                 );
                 
-                string photoUrl = participant.TryGetProperty("photo", out var photoElement) && 
-                                 photoElement.ValueKind == JsonValueKind.String
+                var photoUrl = participant.TryGetProperty("photo", out var photoElement) && 
+                               photoElement.ValueKind == JsonValueKind.String
                     ? photoElement.GetString() ?? ""
                     : "";
                 
@@ -747,20 +747,20 @@ public class DataImporter
                     if (jobInfoElement.TryGetProperty("workingDaysPerWeek", out var wdpwElement))
                     {
                         // Log the actual type and value for debugging
-                        string valueType = wdpwElement.ValueKind.ToString();
-                        string rawValue = wdpwElement.ToString();
+                        var valueType = wdpwElement.ValueKind.ToString();
+                        var rawValue = wdpwElement.ToString();
                         
                         if (wdpwElement.ValueKind == JsonValueKind.Number)
                         {
                             try {
                                 // Try as decimal first - handles both integers and decimals
-                                decimal daysDecimal = wdpwElement.GetDecimal();
+                                var daysDecimal = wdpwElement.GetDecimal();
                                 workingDaysPerWeek = daysDecimal;
                             }
                             catch {
                                 // Try as double as fallback
                                 try {
-                                    double daysDouble = wdpwElement.GetDouble();
+                                    var daysDouble = wdpwElement.GetDouble();
                                     if (!double.IsNaN(daysDouble) && !double.IsInfinity(daysDouble))
                                     {
                                         workingDaysPerWeek = (decimal)daysDouble;
@@ -773,7 +773,7 @@ public class DataImporter
                         }
                         else if (wdpwElement.ValueKind == JsonValueKind.String)
                         {
-                            string strValue = wdpwElement.GetString() ?? "";
+                            var strValue = wdpwElement.GetString() ?? "";
                             // Try as decimal first
                             if (decimal.TryParse(strValue, out var wdpwDecimal))
                             {
@@ -796,7 +796,7 @@ public class DataImporter
                     }
                     cmd.Parameters.AddWithValue("@workingDaysPerWeek", workingDaysPerWeek ?? (object)DBNull.Value);
                 } catch (Exception ex) {
-                    string valueInfo = "not found";
+                    var valueInfo = "not found";
                     if (jobInfoElement.TryGetProperty("workingDaysPerWeek", out var w)) {
                         valueInfo = $"{w.ValueKind}: {w}";
                     }
@@ -808,20 +808,20 @@ public class DataImporter
                     decimal? baseHours = null;
                     if (jobInfoElement.TryGetProperty("baseHours", out var bhElement))
                     {
-                        string valueType = bhElement.ValueKind.ToString();
-                        string rawValue = bhElement.ToString();
+                        var valueType = bhElement.ValueKind.ToString();
+                        var rawValue = bhElement.ToString();
                         
                         if (bhElement.ValueKind == JsonValueKind.Number)
                         {
                             try {
                                 // Try as decimal first - handles both integers and decimals
-                                decimal hoursDecimal = bhElement.GetDecimal();
+                                var hoursDecimal = bhElement.GetDecimal();
                                 baseHours = hoursDecimal;
                             }
                             catch {
                                 // Try as double as fallback
                                 try {
-                                    double hoursDouble = bhElement.GetDouble();
+                                    var hoursDouble = bhElement.GetDouble();
                                     if (!double.IsNaN(hoursDouble) && !double.IsInfinity(hoursDouble))
                                     {
                                         baseHours = (decimal)hoursDouble;
@@ -834,7 +834,7 @@ public class DataImporter
                         }
                         else if (bhElement.ValueKind == JsonValueKind.String)
                         {
-                            string strValue = bhElement.GetString() ?? "";
+                            var strValue = bhElement.GetString() ?? "";
                             // Try as decimal first
                             if (decimal.TryParse(strValue, out var bhDecimal))
                             {
@@ -857,7 +857,7 @@ public class DataImporter
                     }
                     cmd.Parameters.AddWithValue("@baseHours", baseHours ?? (object)DBNull.Value);
                 } catch (Exception ex) {
-                    string valueInfo = "not found";
+                    var valueInfo = "not found";
                     if (jobInfoElement.TryGetProperty("baseHours", out var b)) {
                         valueInfo = $"{b.ValueKind}: {b}";
                     }
@@ -866,7 +866,7 @@ public class DataImporter
                 
                 // Employee group
                 try {
-                    int employeeGroupId = GetLookupId("employee_groups", 
+                    var employeeGroupId = GetLookupId("employee_groups", 
                         jobInfoElement.TryGetProperty("employeeGroup", out var egElement) && 
                         egElement.ValueKind == JsonValueKind.String
                             ? egElement.GetString() ?? "Unknown"
@@ -878,11 +878,11 @@ public class DataImporter
                 
                 // Position info
                 JsonElement positionElement = default;
-                bool hasPosition = jobInfoElement.TryGetProperty("position", out positionElement) && 
+                var hasPosition = jobInfoElement.TryGetProperty("position", out positionElement) && 
                                   positionElement.ValueKind == JsonValueKind.Object;
                 
-                string positionId = "";
-                string positionTitle = "";
+                var positionId = "";
+                var positionTitle = "";
                 
                 try {
                     if (hasPosition)
@@ -914,7 +914,7 @@ public class DataImporter
                 
                 // Banner, brand, group
                 try {
-                    int bannerId = GetLookupId("banners", 
+                    var bannerId = GetLookupId("banners", 
                         hasPosition && positionElement.TryGetProperty("banner", out var bannerElement) && 
                         bannerElement.ValueKind == JsonValueKind.String
                             ? bannerElement.GetString() ?? "Unknown"
@@ -925,7 +925,7 @@ public class DataImporter
                 }
                 
                 try {
-                    int brandId = GetLookupId("brands", 
+                    var brandId = GetLookupId("brands", 
                         hasPosition && positionElement.TryGetProperty("brand", out var brandElement) && 
                         brandElement.ValueKind == JsonValueKind.String
                             ? brandElement.GetString() ?? "Unknown"
@@ -936,7 +936,7 @@ public class DataImporter
                 }
                 
                 try {
-                    int businessGroupId = GetLookupId("business_groups", 
+                    var businessGroupId = GetLookupId("business_groups", 
                         hasPosition && positionElement.TryGetProperty("group", out var groupElement) && 
                         groupElement.ValueKind == JsonValueKind.String
                             ? groupElement.GetString() ?? "Unknown"
@@ -948,7 +948,7 @@ public class DataImporter
                 
                 // Cost centre
                 try {
-                    int costCentreId = GetLookupId("cost_centres", 
+                    var costCentreId = GetLookupId("cost_centres", 
                         hasPosition && positionElement.TryGetProperty("costCentre", out var ccElement) && 
                         ccElement.ValueKind == JsonValueKind.String
                             ? ccElement.GetString() ?? "Unknown"
@@ -960,7 +960,7 @@ public class DataImporter
                 
                 // Employee subgroup
                 try {
-                    int employeeSubgroupId = GetLookupId("employee_subgroups", 
+                    var employeeSubgroupId = GetLookupId("employee_subgroups", 
                         hasPosition && positionElement.TryGetProperty("employeeSubgroup", out var esElement) && 
                         esElement.ValueKind == JsonValueKind.String
                             ? esElement.GetString() ?? "Unknown"
@@ -972,7 +972,7 @@ public class DataImporter
                 
                 // Job role
                 try {
-                    int jobRoleId = GetLookupId("job_roles", 
+                    var jobRoleId = GetLookupId("job_roles", 
                         hasPosition && positionElement.TryGetProperty("jobRole", out var jrElement) && 
                         jrElement.ValueKind == JsonValueKind.String
                             ? jrElement.GetString() ?? "Unknown"
@@ -984,7 +984,7 @@ public class DataImporter
                 
                 // Department
                 try {
-                    int departmentId = GetLookupId("departments", 
+                    var departmentId = GetLookupId("departments", 
                         hasPosition && positionElement.TryGetProperty("payingDepartment", out var pdElement) && 
                         pdElement.ValueKind == JsonValueKind.String
                             ? pdElement.GetString() ?? "Unknown"
@@ -1003,7 +1003,7 @@ public class DataImporter
                     }
                     cmd.Parameters.AddWithValue("@salaryAmount", salaryAmount ?? (object)DBNull.Value);
                 } catch (Exception ex) {
-                    string salaryValue = "not found";
+                    var salaryValue = "not found";
                     if (jobInfoElement.TryGetProperty("salary", out var s)) {
                         salaryValue = s.ToString();
                     }
@@ -1072,11 +1072,11 @@ public class DataImporter
                 
                 // Manager info
                 JsonElement managerElement = default;
-                bool hasManager = jobInfoElement.TryGetProperty("manager", out managerElement) && 
+                var hasManager = jobInfoElement.TryGetProperty("manager", out managerElement) && 
                                  managerElement.ValueKind == JsonValueKind.Object;
                 
                 try {
-                    string managerEmployeeId = 
+                    var managerEmployeeId = 
                         hasManager && managerElement.TryGetProperty("employeeId", out var mEmpIdElement) && 
                         mEmpIdElement.ValueKind == JsonValueKind.String
                             ? mEmpIdElement.GetString() ?? ""
@@ -1088,7 +1088,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string managerName = 
+                    var managerName = 
                         hasManager && managerElement.TryGetProperty("name", out var mNameElement) && 
                         mNameElement.ValueKind == JsonValueKind.String
                             ? mNameElement.GetString() ?? ""
@@ -1100,7 +1100,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string managerPositionId = 
+                    var managerPositionId = 
                         hasManager && managerElement.TryGetProperty("position", out var mPosElement) && 
                         mPosElement.ValueKind == JsonValueKind.String
                             ? mPosElement.GetString() ?? ""
@@ -1112,7 +1112,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string managerPositionTitle = 
+                    var managerPositionTitle = 
                         hasManager && managerElement.TryGetProperty("positionTitle", out var mPosTitleElement) && 
                         mPosTitleElement.ValueKind == JsonValueKind.String
                             ? mPosTitleElement.GetString() ?? ""
@@ -1150,7 +1150,7 @@ public class DataImporter
                 
                 // Additional info
                 try {
-                    string employeeMovementType = 
+                    var employeeMovementType = 
                         jobInfoElement.TryGetProperty("employeeMovementType", out var emtElement) && 
                         emtElement.ValueKind == JsonValueKind.String
                             ? emtElement.GetString() ?? ""
@@ -1162,7 +1162,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string stiScheme = 
+                    var stiScheme = 
                         jobInfoElement.TryGetProperty("stiScheme", out var stiSchemeElement) && 
                         stiSchemeElement.ValueKind == JsonValueKind.String
                             ? stiSchemeElement.GetString() ?? ""
@@ -1174,7 +1174,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string payScaleGroup = 
+                    var payScaleGroup = 
                         jobInfoElement.TryGetProperty("payScaleGroup", out var psgElement) && 
                         psgElement.ValueKind == JsonValueKind.String
                             ? psgElement.GetString() ?? ""
@@ -1186,7 +1186,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string payScaleLevel = 
+                    var payScaleLevel = 
                         jobInfoElement.TryGetProperty("payScaleLevel", out var pslElement) && 
                         pslElement.ValueKind == JsonValueKind.String
                             ? pslElement.GetString() ?? ""
@@ -1198,7 +1198,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string leaveEntitlement = 
+                    var leaveEntitlement = 
                         hasPosition && positionElement.TryGetProperty("leaveEntitlement", out var leElement) && 
                         leElement.ValueKind == JsonValueKind.String
                             ? leElement.GetString() ?? ""
@@ -1210,7 +1210,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string leaveEntitlementName = 
+                    var leaveEntitlementName = 
                         hasPosition && positionElement.TryGetProperty("leaveEntitlementName", out var lenElement) && 
                         lenElement.ValueKind == JsonValueKind.String
                             ? lenElement.GetString() ?? ""
@@ -1222,7 +1222,7 @@ public class DataImporter
                 }
                 
                 try {
-                    string carEligibility = 
+                    var carEligibility = 
                         hasPosition && positionElement.TryGetProperty("carEligibility", out var ceElement) && 
                         ceElement.ValueKind == JsonValueKind.String
                             ? ceElement.GetString() ?? ""
@@ -1278,7 +1278,7 @@ public class DataImporter
                 if (contractResult == null || contractResult == DBNull.Value)
                     throw new Exception("Failed to insert contract and get ID");
                     
-                int contractId = Convert.ToInt32(contractResult);
+                var contractId = Convert.ToInt32(contractResult);
                 
                 // Import mutual flags
                 if (contractElement.TryGetProperty("mutualFlags", out var flagsElement) && 
@@ -1288,8 +1288,8 @@ public class DataImporter
                     {
                         if (flag.ValueKind == JsonValueKind.String)
                         {
-                            string flagValue = flag.GetString() ?? "Unknown";
-                            int flagId = GetLookupId("mutual_flags", flagValue);
+                            var flagValue = flag.GetString() ?? "Unknown";
+                            var flagId = GetLookupId("mutual_flags", flagValue);
                             
                             try
                             {
@@ -1319,7 +1319,7 @@ public class DataImporter
                 if (contractElement.TryGetProperty("weeks", out var weeksElement) && 
                     weeksElement.ValueKind == JsonValueKind.Array)
                 {
-                    int weekIndex = 0;
+                    var weekIndex = 0;
                     foreach (var week in weeksElement.EnumerateArray())
                     {
                         if (week.ValueKind == JsonValueKind.Object)
@@ -1343,7 +1343,7 @@ public class DataImporter
                                 if (weekResult == null || weekResult == DBNull.Value)
                                     throw new Exception("Failed to insert week and get ID");
                                     
-                                int weekId = Convert.ToInt32(weekResult);
+                                var weekId = Convert.ToInt32(weekResult);
                                 
                                 // Import days
                                 string[] days = { "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
@@ -1358,13 +1358,13 @@ public class DataImporter
                                             {
                                                 try
                                                 {
-                                                    string startTime = shift.TryGetProperty("start", out var startElement) && 
-                                                                     startElement.ValueKind == JsonValueKind.String
+                                                    var startTime = shift.TryGetProperty("start", out var startElement) && 
+                                                                    startElement.ValueKind == JsonValueKind.String
                                                         ? startElement.GetString() ?? "00:00"
                                                         : "00:00";
                                                     
-                                                    string endTime = shift.TryGetProperty("end", out var endElement) && 
-                                                                   endElement.ValueKind == JsonValueKind.String
+                                                    var endTime = shift.TryGetProperty("end", out var endElement) && 
+                                                                  endElement.ValueKind == JsonValueKind.String
                                                         ? endElement.GetString() ?? "00:00"
                                                         : "00:00";
                                                     
@@ -1391,7 +1391,7 @@ public class DataImporter
                                                     if (scheduleResult == null || scheduleResult == DBNull.Value)
                                                         throw new Exception("Failed to insert schedule and get ID");
                                                         
-                                                    int scheduleId = Convert.ToInt32(scheduleResult);
+                                                    var scheduleId = Convert.ToInt32(scheduleResult);
                                                     
                                                     // Import breaks
                                                     if (shift.TryGetProperty("breaks", out var breaksElement) && 
@@ -1403,8 +1403,8 @@ public class DataImporter
                                                             {
                                                                 try
                                                                 {
-                                                                    string breakType = breakItem.GetString() ?? "Unknown";
-                                                                    int breakTypeId = GetLookupId("break_types", breakType);
+                                                                    var breakType = breakItem.GetString() ?? "Unknown";
+                                                                    var breakTypeId = GetLookupId("break_types", breakType);
                                                                     
                                                                     await using var insertBreakCmd = new NpgsqlCommand(@"
                                                                         INSERT INTO team_movements.schedule_breaks (
@@ -1467,7 +1467,7 @@ public class DataImporter
         if (root.TryGetProperty("history", out var historyElement) && 
             historyElement.ValueKind == JsonValueKind.Array)
         {
-            int eventIndex = 0;
+            var eventIndex = 0;
             foreach (var eventObj in historyElement.EnumerateArray())
             {
                 if (eventObj.ValueKind == JsonValueKind.Object)
@@ -1475,8 +1475,8 @@ public class DataImporter
                     // Get the first property, which is the event type
                     foreach (var eventProperty in eventObj.EnumerateObject())
                     {
-                        string eventType = eventProperty.Name;
-                        int eventTypeId = GetLookupId("history_event_types", eventType);
+                        var eventType = eventProperty.Name;
+                        var eventTypeId = GetLookupId("history_event_types", eventType);
                         
                         var eventData = eventProperty.Value;
                         if (eventData.ValueKind == JsonValueKind.Object)
@@ -1488,26 +1488,26 @@ public class DataImporter
                                 createdDate = SafeParseDateTime(cdElement, "history.createdDate");
                             }
                             
-                            string createdBy = eventData.TryGetProperty("createdBy", out var cbElement) && 
-                                             cbElement.ValueKind == JsonValueKind.String
+                            var createdBy = eventData.TryGetProperty("createdBy", out var cbElement) && 
+                                            cbElement.ValueKind == JsonValueKind.String
                                 ? cbElement.GetString() ?? ""
                                 : "";
                             
-                            string createdByName = eventData.TryGetProperty("createdByName", out var cbnElement) && 
-                                                  cbnElement.ValueKind == JsonValueKind.String
+                            var createdByName = eventData.TryGetProperty("createdByName", out var cbnElement) && 
+                                                cbnElement.ValueKind == JsonValueKind.String
                                 ? cbnElement.GetString() ?? ""
                                 : "";
                             
-                            string notes = eventData.TryGetProperty("notes", out var notesElement) && 
-                                         notesElement.ValueKind == JsonValueKind.String
+                            var notes = eventData.TryGetProperty("notes", out var notesElement) && 
+                                        notesElement.ValueKind == JsonValueKind.String
                                 ? notesElement.GetString() ?? ""
                                 : "";
                             
                             // Participant data
-                            string participantEmployeeId = "";
-                            string participantName = "";
-                            string participantPositionId = "";
-                            string participantPositionTitle = "";
+                            var participantEmployeeId = "";
+                            var participantName = "";
+                            var participantPositionId = "";
+                            var participantPositionTitle = "";
                             int? participantRoleId = null;
                             
                             if (eventData.TryGetProperty("participant", out var participantElement) && 
@@ -1536,7 +1536,7 @@ public class DataImporter
                                 if (participantElement.TryGetProperty("role", out var prElement) && 
                                     prElement.ValueKind == JsonValueKind.String)
                                 {
-                                    string roleValue = prElement.GetString() ?? "Unknown";
+                                    var roleValue = prElement.GetString() ?? "Unknown";
                                     participantRoleId = GetLookupId("participant_roles", roleValue);
                                 }
                             }
@@ -1620,7 +1620,7 @@ public class DataImporter
             {
                 if (tag.ValueKind == JsonValueKind.String)
                 {
-                    string tagValue = tag.GetString() ?? "";
+                    var tagValue = tag.GetString() ?? "";
                     if (!string.IsNullOrEmpty(tagValue))
                     {
                         await using var insertCmd = new NpgsqlCommand(@"
@@ -1646,7 +1646,7 @@ public class DataImporter
     {
         if (string.IsNullOrEmpty(value)) value = "Unknown";
         
-        string cacheKey = $"{tableName}:{value}";
+        var cacheKey = $"{tableName}:{value}";
         if (_lookupCache.TryGetValue(cacheKey, out var id))
         {
             return id;
@@ -1662,7 +1662,7 @@ public class DataImporter
     {
         if (element.ValueKind == JsonValueKind.String)
         {
-            string dateString = element.GetString() ?? "";
+            var dateString = element.GetString() ?? "";
             if (string.IsNullOrEmpty(dateString) ||
                 dateString.Equals("null", StringComparison.OrdinalIgnoreCase) ||
                 dateString.Equals("undefined", StringComparison.OrdinalIgnoreCase))
@@ -1697,8 +1697,8 @@ public class DataImporter
             try
             {
                 // Try parsing as Unix timestamp (milliseconds since epoch)
-                long timestamp = element.GetInt64();
-                DateTime dateTime = DateTimeOffset.FromUnixTimeMilliseconds(timestamp).DateTime;
+                var timestamp = element.GetInt64();
+                var dateTime = DateTimeOffset.FromUnixTimeMilliseconds(timestamp).DateTime;
                 return dateTime;
             }
             catch
@@ -1726,7 +1726,7 @@ public class DataImporter
                     // Try as double and convert
                     try
                     {
-                        double doubleValue = element.GetDouble();
+                        var doubleValue = element.GetDouble();
                         if (!double.IsNaN(doubleValue) && !double.IsInfinity(doubleValue))
                         {
                             return (decimal)doubleValue;
@@ -1735,7 +1735,7 @@ public class DataImporter
                     catch
                     {
                         // Last ditch attempt - stringify and parse
-                        string strValue = element.ToString();
+                        var strValue = element.ToString();
                         if (decimal.TryParse(strValue, out var decimalValue))
                         {
                             return decimalValue;
@@ -1745,7 +1745,7 @@ public class DataImporter
             }
             else if (element.ValueKind == JsonValueKind.String)
             {
-                string strValue = element.GetString() ?? "";
+                var strValue = element.GetString() ?? "";
                 
                 // Special cases
                 if (string.IsNullOrEmpty(strValue) ||
@@ -1758,7 +1758,7 @@ public class DataImporter
                 }
                 
                 // Handle currency symbols and number formatting
-                string cleanValue = strValue
+                var cleanValue = strValue
                     .Replace("$", "")
                     .Replace("€", "")
                     .Replace("£", "")
@@ -1798,7 +1798,7 @@ public class DataImporter
                     // Try as double and convert
                     try
                     {
-                        double doubleValue = element.GetDouble();
+                        var doubleValue = element.GetDouble();
                         if (!double.IsNaN(doubleValue) && !double.IsInfinity(doubleValue))
                         {
                             return (int)Math.Round(doubleValue);
@@ -1807,7 +1807,7 @@ public class DataImporter
                     catch
                     {
                         // Last ditch attempt - stringify and parse
-                        string strValue = element.ToString();
+                        var strValue = element.ToString();
                         if (int.TryParse(strValue, out var intValue))
                         {
                             return intValue;
@@ -1817,7 +1817,7 @@ public class DataImporter
             }
             else if (element.ValueKind == JsonValueKind.String)
             {
-                string strValue = element.GetString() ?? "";
+                var strValue = element.GetString() ?? "";
                 
                 // Special cases
                 if (string.IsNullOrEmpty(strValue) ||
@@ -1830,7 +1830,7 @@ public class DataImporter
                 }
                 
                 // Handle common formatting
-                string cleanValue = strValue
+                var cleanValue = strValue
                     .Replace(",", "")
                     .Trim();
                 
@@ -1871,7 +1871,7 @@ public class DataImporter
             }
             else if (element.ValueKind == JsonValueKind.String)
             {
-                string strValue = element.GetString() ?? "";
+                var strValue = element.GetString() ?? "";
                 
                 // Common string boolean representations
                 if (string.Equals(strValue, "true", StringComparison.OrdinalIgnoreCase) ||
@@ -1891,7 +1891,7 @@ public class DataImporter
             }
             else if (element.ValueKind == JsonValueKind.Number)
             {
-                int intValue = element.GetInt32();
+                var intValue = element.GetInt32();
                 return intValue != 0;
             }
             

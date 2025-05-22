@@ -222,14 +222,14 @@ public class SchemaAnalyzer
             {
                 var brandCode = brandCodeElement.GetString() ?? "Unknown";
                 
-                string brandName = "Unknown";
+                var brandName = "Unknown";
                 if (positionElement.TryGetProperty("brandName", out var brandNameElement) &&
                     brandNameElement.ValueKind == JsonValueKind.String)
                 {
                     brandName = brandNameElement.GetString() ?? "Unknown";
                 }
                 
-                string brandDisplayName = "Unknown";
+                var brandDisplayName = "Unknown";
                 if (positionElement.TryGetProperty("brandDisplayName", out var brandDisplayNameElement) &&
                     brandDisplayNameElement.ValueKind == JsonValueKind.String)
                 {
@@ -250,7 +250,7 @@ public class SchemaAnalyzer
                 deptCodeElement.ValueKind == JsonValueKind.String)
             {
                 var deptCode = deptCodeElement.GetString() ?? "Unknown";
-                string deptName = "Unknown";
+                var deptName = "Unknown";
                 
                 if (positionElement.TryGetProperty("payingDepartmentName", out var deptNameElement) &&
                     deptNameElement.ValueKind == JsonValueKind.String)
@@ -265,7 +265,7 @@ public class SchemaAnalyzer
                 ccCodeElement.ValueKind == JsonValueKind.String)
             {
                 var ccCode = ccCodeElement.GetString() ?? "Unknown";
-                string ccName = "Unknown";
+                var ccName = "Unknown";
                 
                 if (positionElement.TryGetProperty("costCentreName", out var ccNameElement) &&
                     ccNameElement.ValueKind == JsonValueKind.String)
@@ -305,7 +305,7 @@ public class SchemaAnalyzer
             deptCodeElement.ValueKind == JsonValueKind.String)
         {
             var deptCode = deptCodeElement.GetString() ?? "Unknown";
-            string deptName = "Unknown";
+            var deptName = "Unknown";
             
             if (participant.TryGetProperty("payingDepartmentName", out var deptNameElement) &&
                 deptNameElement.ValueKind == JsonValueKind.String)
@@ -320,7 +320,7 @@ public class SchemaAnalyzer
             ccCodeElement.ValueKind == JsonValueKind.String)
         {
             var ccCode = ccCodeElement.GetString() ?? "Unknown";
-            string ccName = "Unknown";
+            var ccName = "Unknown";
             
             if (participant.TryGetProperty("costCentreName", out var ccNameElement) &&
                 ccNameElement.ValueKind == JsonValueKind.String)

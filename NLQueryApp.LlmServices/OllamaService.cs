@@ -1,8 +1,8 @@
 ﻿using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using NLQueryApp.Core;
-using NLQueryApp.Core.Models;
 
 namespace NLQueryApp.LlmServices;
 
@@ -10,109 +10,183 @@ public class OllamaService : ILlmService
 {
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
+    private readonly ILogger<OllamaService> _logger;
     private readonly string _baseUrl;
     private readonly string _model;
+    private readonly int _contextWindow;
 
-    public OllamaService(HttpClient httpClient, IConfiguration configuration)
+    public OllamaService(HttpClient httpClient, IConfiguration configuration, ILogger<OllamaService> logger)
     {
         _httpClient = httpClient;
         _configuration = configuration;
+        _logger = logger;
 
         _baseUrl = _configuration["LlmSettings:Ollama:BaseUrl"] ?? "http://localhost:11434";
         _model = _configuration["LlmSettings:Ollama:Model"] ?? "llama3";
+        _contextWindow = _configuration.GetValue<int>("LlmSettings:Ollama:ContextWindow", 128000);
 
         _httpClient.BaseAddress = new Uri(_baseUrl);
+        _httpClient.Timeout = TimeSpan.FromMinutes(_configuration.GetValue<int>("LlmSettings:Ollama:TimeoutMinutes", 5));
     }
 
     public async Task<LlmQueryResponse> GenerateSqlQueryAsync(LlmQueryRequest request)
-{
-    var systemPrompt = SystemPrompt.CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
-    var userPrompt = CreateUserPrompt(request);
-
-    // Include structure requirements in the prompt itself
-    var structureInstructions = @"
-Return your response in this exact JSON format:
-{
-  ""sqlQuery"": ""SELECT * FROM table;"",
-  ""explanation"": ""Description of what the query does.""
-}";
-
-    var prompt = $"{systemPrompt}\n\n{structureInstructions}\n\n{userPrompt}";
-
-    var requestData = new
     {
-        model = _model,
-        prompt,
-        stream = false,
-        temperature = 0.0,
-        format = "json" // This just tells Ollama to return JSON, but doesn't define the structure
-    };
+        var systemPrompt = SystemPrompt.CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
+        var userPrompt = CreateUserPrompt(request);
 
-    var response = await _httpClient.PostAsJsonAsync("api/generate", requestData);
-    response.EnsureSuccessStatusCode();
+        // Enhanced prompt to ensure JSON response
+        var prompt = $@"{systemPrompt}
 
-    var responseObject = await response.Content.ReadFromJsonAsync<JsonElement>();
-    var content = responseObject.GetProperty("response").GetString();
-    
-    try
-    {
-        // Direct JSON deserialization
-        return JsonSerializer.Deserialize<LlmQueryResponse>(content, new JsonSerializerOptions 
-        { 
-            PropertyNameCaseInsensitive = true 
-        });
-    }
-    catch (JsonException)
-    {
-        // Fallback to extract JSON from text if needed
-        var jsonMatch = System.Text.RegularExpressions.Regex.Match(content, @"\{.*\}", 
-            System.Text.RegularExpressions.RegexOptions.Singleline);
-            
-        if (jsonMatch.Success)
+IMPORTANT: Always respond with valid JSON in exactly this format:
+{{
+    ""sqlQuery"": ""your generated query here"",
+    ""explanation"": ""brief explanation of the query""
+}}
+
+Do not include any text outside the JSON object.
+
+{userPrompt}";
+
+        // JSON schema definition for the expected response format
+        var jsonSchema = new
         {
-            return JsonSerializer.Deserialize<LlmQueryResponse>(jsonMatch.Value, new JsonSerializerOptions
+            type = "object",
+            properties = new
             {
-                PropertyNameCaseInsensitive = true
-            });
-        }
-        
-        // If all else fails, create a default response
-        return new LlmQueryResponse
-        {
-            SqlQuery = "",
-            Explanation = $"Failed to parse JSON from LLM response: {content}"
+                sqlQuery = new
+                {
+                    type = "string",
+                    description = "The SQL query to execute against the database"
+                },
+                explanation = new
+                {
+                    type = "string",
+                    description = "Brief explanation of what the query does"
+                }
+            },
+            required = new[] { "sqlQuery", "explanation" }
         };
-    }
-}
 
-//     private string CreateSystemPrompt(string databaseSchema, string schemaContext, string dataSourceType)
-//     {
-//         var queryLanguage = GetQueryLanguage(dataSourceType);
-//     
-//         return @$"
-// You are an expert SQL query generator for PostgreSQL databases. Your task is to convert natural language questions into valid PostgreSQL queries.
-//
-// ### DATABASE SCHEMA:
-// ```sql
-// {databaseSchema}
-// ADDITIONAL CONTEXT:
-// {schemaContext}
-// IMPORTANT RULES:
-//
-// Only generate SELECT queries - no INSERT, UPDATE, DELETE, or other modifying statements.
-// Wrap your SQL query in triple backticks like this: sql [YOUR QUERY HERE] 
-// Keep your explanation brief and separate from the SQL code.
-// Use standard PostgreSQL syntax.
-// If asked about errors, generate a query to help debug the issue.
-// If the schema doesn't match what's in the database, generate a query to show available tables.
-// Make the query as efficient as possible.
-// Use proper JOINs when necessary.
-//
-// FORMAT YOUR RESPONSE LIKE THIS:
-// sqlSELECT * FROM example_table WHERE condition = true;
-// Explanation: Brief explanation of what this query does.
-// ";
-//     }
+        var requestData = new
+        {
+            model = _model,
+            prompt,
+            stream = false,
+            temperature = 0.0,
+            format = jsonSchema,
+            options = new {
+                num_ctx = _contextWindow
+            }
+        };
+        
+        _logger.LogDebug("Ollama Request Data: {RequestData}", JsonSerializer.Serialize(requestData));
+
+        var content = string.Empty;
+        
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync("api/generate", requestData);
+            response.EnsureSuccessStatusCode();
+
+            var responseObject = await response.Content.ReadFromJsonAsync<JsonElement>();
+            content = responseObject.GetProperty("response").GetString() ?? string.Empty;
+            
+            _logger.LogDebug("Raw Ollama response: {Response}", content);
+            
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                _logger.LogWarning("Received empty response from Ollama");
+                return new LlmQueryResponse
+                {
+                    SqlQuery = "",
+                    Explanation = "Received empty response from Ollama"
+                };
+            }
+            
+            // Direct JSON deserialization with schema enforcement
+            var result = JsonSerializer.Deserialize<LlmQueryResponse>(content, new JsonSerializerOptions 
+            { 
+                PropertyNameCaseInsensitive = true 
+            });
+
+            if (result == null)
+            {
+                _logger.LogWarning("Failed to deserialize Ollama response to LlmQueryResponse");
+                return new LlmQueryResponse
+                {
+                    SqlQuery = "",
+                    Explanation = "Failed to deserialize response from Ollama"
+                };
+            }
+
+            return result;
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "HTTP error when calling Ollama API");
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = $"HTTP error when calling Ollama: {ex.Message}"
+            };
+        }
+        catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+        {
+            _logger.LogError(ex, "Timeout when calling Ollama API");
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = "Timeout when calling Ollama API"
+            };
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "JSON parsing error from Ollama response: {Content}", content);
+            
+            // Fallback: try to extract JSON from response if it's wrapped in text
+            if (!string.IsNullOrEmpty(content))
+            {
+                var jsonMatch = System.Text.RegularExpressions.Regex.Match(content, @"\{.*\}", 
+                    System.Text.RegularExpressions.RegexOptions.Singleline);
+                    
+                if (jsonMatch.Success)
+                {
+                    try 
+                    {
+                        var fallbackResult = JsonSerializer.Deserialize<LlmQueryResponse>(jsonMatch.Value, new JsonSerializerOptions
+                        {
+                            PropertyNameCaseInsensitive = true
+                        });
+                        
+                        if (fallbackResult != null)
+                        {
+                            _logger.LogInformation("Successfully parsed JSON from wrapped response");
+                            return fallbackResult;
+                        }
+                    }
+                    catch (JsonException fallbackEx)
+                    {
+                        _logger.LogError(fallbackEx, "Fallback JSON parsing also failed");
+                    }
+                }
+            }
+            
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = $"Failed to parse JSON from Ollama response: {ex.Message}"
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error when calling Ollama API");
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = $"Unexpected error when calling Ollama: {ex.Message}"
+            };
+        }
+    }
 
     private string CreateUserPrompt(LlmQueryRequest request)
     {
@@ -130,103 +204,5 @@ Please fix the query. The original question was: {request.UserQuestion}
         }
 
         return $"Convert the following question to a {request.DataSourceType} query: {request.UserQuestion}";
-    }
-
-    private LlmQueryResponse ParseLlmResponse(string content, string dataSourceType)
-{
-    try
-    {
-        Console.WriteLine($"Raw Ollama response: {content}");  // Debug logging
-        
-        // First try to parse as JSON
-        if (content.Contains("{") && content.Contains("}"))
-        {
-            var jsonMatch = System.Text.RegularExpressions.Regex.Match(content, @"\{.*\}",
-                System.Text.RegularExpressions.RegexOptions.Singleline);
-            if (jsonMatch.Success)
-            {
-                var jsonResponse = JsonSerializer.Deserialize<LlmQueryResponse>(jsonMatch.Value,
-                    new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true
-                    });
-
-                if (jsonResponse != null && !string.IsNullOrWhiteSpace(jsonResponse.SqlQuery))
-                {
-                    return jsonResponse;
-                }
-            }
-        }
-
-        // Improved SQL extraction pattern
-        var sqlPattern = $@"```(?:sql|{GetQueryLanguage(dataSourceType)})?\s*(.*?)\s*```";
-        var sqlMatch = System.Text.RegularExpressions.Regex.Match(
-            content, 
-            sqlPattern,
-            System.Text.RegularExpressions.RegexOptions.Singleline);
-        
-        if (sqlMatch.Success)
-        {
-            var sql = sqlMatch.Groups[1].Value.Trim();
-            
-            // Extract any explanation text that might come after the SQL
-            var explanationText = content;
-            var sqlBlockIndex = content.IndexOf("```");
-            if (sqlBlockIndex >= 0)
-            {
-                var endBlockIndex = content.IndexOf("```", sqlBlockIndex + 3);
-                if (endBlockIndex >= 0 && endBlockIndex + 3 < content.Length)
-                {
-                    explanationText = content.Substring(endBlockIndex + 3).Trim();
-                }
-            }
-            
-            // If we still have explanation text in the SQL, clean it up
-            if (sql.Contains("Explanation:"))
-            {
-                var parts = sql.Split(new[] { "Explanation:" }, StringSplitOptions.RemoveEmptyEntries);
-                sql = parts[0].Trim();
-                if (parts.Length > 1)
-                {
-                    explanationText = "Explanation: " + parts[1].Trim();
-                }
-            }
-
-            return new LlmQueryResponse
-            {
-                SqlQuery = sql,
-                Explanation = explanationText
-            };
-        }
-
-        // If we still can't find SQL, return the whole response as an error
-        return new LlmQueryResponse
-        {
-            SqlQuery = "",
-            Explanation = $"Failed to parse query from response: {content}"
-        };
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"Error parsing Ollama response: {ex}");
-        return new LlmQueryResponse
-        {
-            SqlQuery = "",
-            Explanation = $"Error parsing LLM response: {ex.Message}"
-        };
-    }
-}
-    
-    private string GetQueryLanguage(string dataSourceType)
-    {
-        return dataSourceType.ToLower() switch
-        {
-            "postgres" => "sql",
-            "mysql" => "sql",
-            "sqlserver" => "sql",
-            "mongodb" => "mongodb",
-            "elasticsearch" => "elasticsearch",
-            _ => "sql"
-        };
     }
 }

@@ -1,6 +1,4 @@
-﻿using System.Collections.Generic;
-
-namespace NLQueryApp.Core.Models;
+﻿namespace NLQueryApp.Core.Models;
 
 public class DataSourceDefinition
 {

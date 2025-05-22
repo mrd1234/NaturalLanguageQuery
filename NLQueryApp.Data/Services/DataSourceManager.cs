@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging;
 using NLQueryApp.Core;
 using NLQueryApp.Core.Models;
 using Npgsql;
-using NpgsqlTypes;
 
 namespace NLQueryApp.Data.Services;
 

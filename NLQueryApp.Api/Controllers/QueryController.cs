@@ -2,7 +2,6 @@
 using NLQueryApp.Api.Models;
 using NLQueryApp.Api.Services;
 using NLQueryApp.Core;
-using NLQueryApp.Core.Models;
 
 namespace NLQueryApp.Api.Controllers;
 

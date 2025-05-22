@@ -1,7 +1,6 @@
 ﻿using System.Text;
 using Microsoft.Extensions.Configuration;
 using NLQueryApp.Core;
-using NLQueryApp.Core.Models;
 using Npgsql;
 
 namespace NLQueryApp.Data.Services;

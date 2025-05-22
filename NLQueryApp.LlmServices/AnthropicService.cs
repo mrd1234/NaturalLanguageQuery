@@ -1,8 +1,8 @@
 ﻿using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using NLQueryApp.Core;
-using NLQueryApp.Core.Models;
 
 namespace NLQueryApp.LlmServices;
 
@@ -10,33 +10,46 @@ public class AnthropicService : ILlmService
 {
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
+    private readonly ILogger<AnthropicService> _logger;
     private readonly string _apiKey;
     private readonly string _model;
 
-    public AnthropicService(HttpClient httpClient, IConfiguration configuration)
+    public AnthropicService(HttpClient httpClient, IConfiguration configuration, ILogger<AnthropicService> logger)
     {
         _httpClient = httpClient;
         _configuration = configuration;
+        _logger = logger;
         
         _apiKey = _configuration["LlmSettings:Anthropic:ApiKey"] 
             ?? throw new ArgumentNullException("Anthropic API key is not configured");
         
-        _model = _configuration["LlmSettings:Anthropic:Model"] ?? "claude-3-opus-20240229";
+        _model = _configuration["LlmSettings:Anthropic:Model"] ?? "claude-3-7-sonnet-20250219";
         
         _httpClient.BaseAddress = new Uri("https://api.anthropic.com/v1/");
         _httpClient.DefaultRequestHeaders.Add("x-api-key", _apiKey);
         _httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        _httpClient.Timeout = TimeSpan.FromMinutes(_configuration.GetValue<int>("LlmSettings:Anthropic:TimeoutMinutes", 2));
     }
 
     public async Task<LlmQueryResponse> GenerateSqlQueryAsync(LlmQueryRequest request)
     {
         var systemPrompt = SystemPrompt.CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
         var userPrompt = CreateUserPrompt(request);
+        
+        // Enhance system prompt to ensure JSON response
+        var enhancedSystemPrompt = $@"{systemPrompt}
+
+IMPORTANT: Always respond with valid JSON in exactly this format:
+{{
+    ""sqlQuery"": ""your generated query here"",
+    ""explanation"": ""brief explanation of the query""
+}}
+
+Do not include any text outside the JSON object.";
     
         var messages = new List<object>
         {
-            new { role = "system", content = systemPrompt },
-            new { role = "user", content = userPrompt }
+            new { role = "user", content = enhancedSystemPrompt + "\n\n" + userPrompt }
         };
     
         var requestData = new
@@ -44,60 +57,73 @@ public class AnthropicService : ILlmService
             model = _model,
             messages,
             max_tokens = 4000,
-            temperature = 0.0,
-            response_format = new { type = "json_object" }
+            temperature = 0.0
         };
-    
-        var response = await _httpClient.PostAsJsonAsync("messages", requestData);
-        response.EnsureSuccessStatusCode();
-    
-        var responseObject = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var content = responseObject.GetProperty("content").GetProperty("0").GetProperty("text").GetString();
-    
-        // Parse the JSON response
-        return JsonSerializer.Deserialize<LlmQueryResponse>(content, new JsonSerializerOptions 
-        { 
-            PropertyNameCaseInsensitive = true 
-        });
+
+        _logger.LogDebug("Anthropic Request Data: {RequestData}", JsonSerializer.Serialize(requestData));
+
+        var content = string.Empty;
+
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync("messages", requestData);
+            response.EnsureSuccessStatusCode();
+
+            var responseObject = await response.Content.ReadFromJsonAsync<JsonElement>();
+            content = responseObject.GetProperty("content")[0].GetProperty("text").GetString() ?? string.Empty;
+            
+            _logger.LogDebug("Raw Anthropic response: {Response}", content);
+
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                _logger.LogWarning("Received empty response from Anthropic");
+                return new LlmQueryResponse
+                {
+                    SqlQuery = "",
+                    Explanation = "Received empty response from Anthropic"
+                };
+            }
+
+            // Parse the response with fallback handling
+            return ParseLlmResponse(content, request.DataSourceType);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "HTTP error when calling Anthropic API");
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = $"HTTP error when calling Anthropic: {ex.Message}"
+            };
+        }
+        catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+        {
+            _logger.LogError(ex, "Timeout when calling Anthropic API");
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = "Timeout when calling Anthropic API"
+            };
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "JSON parsing error from Anthropic response: {Content}", content);
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = $"Failed to parse JSON from Anthropic response: {ex.Message}"
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error when calling Anthropic API");
+            return new LlmQueryResponse
+            {
+                SqlQuery = "",
+                Explanation = $"Unexpected error when calling Anthropic: {ex.Message}"
+            };
+        }
     }
-    
-//     private string CreateSystemPrompt(string databaseSchema, string schemaContext, string dataSourceType)
-//     {
-//         var queryLanguage = GetQueryLanguage(dataSourceType);
-//     
-//         return @$"
-// You are an expert query generator for {dataSourceType} databases. Your task is to convert natural language questions into valid {queryLanguage} queries.
-//
-// Here is the database schema you'll be working with:
-//
-// {databaseSchema}
-//
-// ## Additional Context About This Schema
-//
-// {schemaContext}
-//
-// Important rules:
-// 1. Only generate READ-ONLY queries - no INSERT, UPDATE, DELETE, or other modifying statements.
-// 2. Always wrap the query in triple backticks (```{queryLanguage}) for clear identification.
-// 3. Provide a brief explanation of your query logic after the query.
-// 4. Use standard {dataSourceType} syntax and features.
-// 5. If you receive an error from a previous query attempt, analyze it carefully and fix the issue.
-// 6. Always return your answer in JSON format with two fields: 'sqlQuery' and 'explanation'.
-// 7. Make the query as efficient as possible.
-// 8. Use appropriate joins when necessary and ensure condition columns match types.
-// 9. Do not use functions or features not available in {dataSourceType}.
-//
-// CRITICAL: When using table aliases, ALWAYS use column names exactly as specified in the schema.
-// For example, use mt.type_name (NOT mt.name or mt.movement_type) when querying from movement_types.
-//
-// CRITICALLY IMPORTANT: 
-// - 'team_movements' is a SCHEMA name, NOT a table name
-// - All tables are in the team_movements schema
-// - Always use team_movements.table_name in your SQL queries
-// - For example: FROM team_movements.movement_types mt
-// - NEVER use FROM team_movements mt (this is incorrect)
-// ";
-//     }
     
     private string CreateUserPrompt(LlmQueryRequest request)
     {
@@ -131,8 +157,9 @@ Please fix the query. The original question was: {request.UserQuestion}
                         PropertyNameCaseInsensitive = true
                     });
                 
-                    if (jsonResponse != null)
+                    if (jsonResponse != null && !string.IsNullOrEmpty(jsonResponse.SqlQuery))
                     {
+                        _logger.LogDebug("Successfully parsed JSON response from Anthropic");
                         return jsonResponse;
                     }
                 }
@@ -158,6 +185,8 @@ Please fix the query. The original question was: {request.UserQuestion}
             {
                 var sql = sqlMatch.Groups[1].Value.Trim();
                 var explanation = content.Replace(sqlMatch.Value, "").Trim();
+                
+                _logger.LogInformation("Parsed SQL from code block fallback");
             
                 return new LlmQueryResponse
                 {
@@ -167,6 +196,7 @@ Please fix the query. The original question was: {request.UserQuestion}
             }
         
             // If we still can't find SQL, return the whole response as an error
+            _logger.LogWarning("Failed to parse any structured response from Anthropic");
             return new LlmQueryResponse
             {
                 SqlQuery = "",
@@ -175,6 +205,7 @@ Please fix the query. The original question was: {request.UserQuestion}
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Error parsing Anthropic LLM response");
             return new LlmQueryResponse
             {
                 SqlQuery = "",
