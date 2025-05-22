@@ -23,7 +23,11 @@ public abstract class BaseLlmService : ILlmService
 
     public async Task<LlmQueryResponse> GenerateSqlQueryAsync(LlmQueryRequest request)
     {
-        var systemPrompt = SystemPrompt.CreateSystemPrompt(request.DatabaseSchema, request.SchemaContext, request.DataSourceType);
+        var systemPrompt = SystemPrompt.CreateSystemPrompt(
+            request.DatabaseSchema, 
+            request.SchemaContext, 
+            request.DataSourceType, 
+            request.DialectNotes);
         var userPrompt = CreateUserPrompt(request);
 
         return await _retryHandler.ExecuteWithRetryAsync(async () =>
@@ -141,17 +145,6 @@ Please fix the query. The original question was: {request.UserQuestion}
         "elasticsearch" => "elasticsearch",
         _ => "sql"
     };
-
-    // private int GetRetryAfterDelay(HttpResponseMessage response)
-    // {
-    //     if (response.Headers.RetryAfter?.Delta.HasValue == true)
-    //     {
-    //         var seconds = (int)response.Headers.RetryAfter.Delta.Value.TotalSeconds;
-    //         return Math.Max(seconds * 1000, 2000); // At least 2 seconds
-    //     }
-    //     
-    //     return 5000; // Default 5 seconds for rate limits
-    // }
     
     private int GetRetryAfterDelay(HttpResponseMessage response)
     {

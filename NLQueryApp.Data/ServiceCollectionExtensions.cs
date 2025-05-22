@@ -12,11 +12,15 @@ public static class ServiceCollectionExtensions
     {
         // Register data source providers
         services.AddSingleton<IDataSourceProvider, PostgresDataSourceProvider>();
+        // Add more providers as they are implemented:
+        // services.AddSingleton<IDataSourceProvider, SqlServerDataSourceProvider>();
+        // services.AddSingleton<IDataSourceProvider, MySqlDataSourceProvider>();
+        // services.AddSingleton<IDataSourceProvider, MongoDbDataSourceProvider>();
         
         // Register data source manager
         services.AddSingleton<IDataSourceManager, DataSourceManager>();
         
-        // Register database service
+        // Register database service (for app's own database)
         services.AddSingleton<IDatabaseService, DatabaseService>();
         
         return services;

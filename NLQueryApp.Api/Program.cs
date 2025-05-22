@@ -1,7 +1,7 @@
 using NLQueryApp.Api.Services;
 using NLQueryApp.Core;
 using NLQueryApp.Core.Models;
-using NLQueryApp.Data; // Make sure this is imported
+using NLQueryApp.Data;
 using NLQueryApp.LlmServices;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -23,7 +23,7 @@ builder.Services.AddCors(options =>
 });
 
 // Register services
-builder.Services.AddDataServices(); // This should work now
+builder.Services.AddDataServices();
 builder.Services.AddLlmServices(builder.Configuration);
 builder.Services.AddScoped<QueryService>();
 
@@ -66,13 +66,11 @@ using (var scope = app.Services.CreateScope())
             {
                 logger.LogInformation("Retrying in {RetryDelay}ms", retryDelayMs);
                 await Task.Delay(retryDelayMs);
-                // Increase delay for next retry (exponential backoff)
                 retryDelayMs *= 2;
             }
             else
             {
                 logger.LogCritical(ex, "Database initialization failed after {MaxRetries} attempts", maxRetries);
-                // Allow app to start but in a degraded state - may not work properly without DB
             }
         }
     }
@@ -83,29 +81,63 @@ using (var scope = app.Services.CreateScope())
         var dataSourceManager = scope.ServiceProvider.GetRequiredService<IDataSourceManager>();
         var dataSources = await dataSourceManager.GetDataSourcesAsync();
         
-        if (!dataSources.Any())
+        var defaultDsConfig = builder.Configuration.GetSection("DefaultDataSource");
+        var defaultDsId = defaultDsConfig["Id"] ?? "team-movements";
+        
+        // Check if the default data source already exists
+        var existingDefault = dataSources.FirstOrDefault(ds => ds.Id == defaultDsId);
+        
+        if (existingDefault == null && defaultDsConfig.Exists())
         {
-            logger.LogInformation("No data sources found. Creating default data source...");
+            logger.LogInformation("Creating default data source...");
             
             var defaultDataSource = new DataSourceDefinition
             {
-                Id = "default",
-                Name = "Default PostgreSQL",
-                Description = "Default PostgreSQL data source created on application startup",
-                Type = "postgres",
-                ConnectionParameters = new Dictionary<string, string>
-                {
-                    {"Host", builder.Configuration.GetValue<string>("DefaultDataSource:Host") ?? "localhost"},
-                    {"Port", builder.Configuration.GetValue<string>("DefaultDataSource:Port") ?? "5432"},
-                    {"Database", builder.Configuration.GetValue<string>("DefaultDataSource:Database") ?? "nlquery"},
-                    {"Username", builder.Configuration.GetValue<string>("DefaultDataSource:Username") ?? "postgres"},
-                    {"Password", builder.Configuration.GetValue<string>("DefaultDataSource:Password") ?? "postgres"},
-                    {"IncludedSchemas", "team_movements,lookup"},
-                }
+                Id = defaultDsId,
+                Name = defaultDsConfig["Name"] ?? "Team Movements Database",
+                Description = defaultDsConfig["Description"] ?? "Default PostgreSQL data source",
+                Type = defaultDsConfig["Type"] ?? "postgres",
+                ConnectionParameters = new Dictionary<string, string>()
             };
             
-            await dataSourceManager.CreateDataSourceAsync(defaultDataSource);
-            logger.LogInformation("Default data source created successfully");
+            // Build connection parameters from configuration
+            foreach (var config in defaultDsConfig.GetChildren())
+            {
+                var key = config.Key;
+                var value = config.Value;
+                
+                // Skip non-connection parameter fields
+                if (key == "Id" || key == "Name" || key == "Description" || key == "Type")
+                    continue;
+                    
+                if (!string.IsNullOrEmpty(value))
+                {
+                    defaultDataSource.ConnectionParameters[key] = value;
+                }
+            }
+            
+            try
+            {
+                await dataSourceManager.CreateDataSourceAsync(defaultDataSource);
+                logger.LogInformation("Default data source created successfully");
+                
+                // Set the schema context if the file exists
+                var contextPath = "SchemaContext/team_movements_context.md";
+                if (File.Exists(contextPath))
+                {
+                    var context = await File.ReadAllTextAsync(contextPath);
+                    await dataSourceManager.SetSchemaContextAsync(defaultDsId, context);
+                    logger.LogInformation("Schema context loaded for default data source");
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not create default data source. It may already exist or connection may be invalid.");
+            }
+        }
+        else if (existingDefault != null)
+        {
+            logger.LogInformation("Default data source already exists");
         }
     }
     catch (Exception ex)

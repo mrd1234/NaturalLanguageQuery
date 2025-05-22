@@ -1,4 +1,6 @@
-﻿using System.Text;
+﻿using System.Data;
+using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using NLQueryApp.Core;
 using NLQueryApp.Core.Models;
@@ -9,6 +11,9 @@ namespace NLQueryApp.Data.Providers;
 public class PostgresDataSourceProvider : IDataSourceProvider
 {
     private readonly ILogger<PostgresDataSourceProvider> _logger;
+    private static readonly Regex DangerousSqlPattern = new(
+        @"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|EXEC|EXECUTE)\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public PostgresDataSourceProvider(ILogger<PostgresDataSourceProvider> logger)
     {
@@ -25,10 +30,372 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync();
         
-        // Extract schema information similar to how it's done in DatabaseService
-        var includedSchemas = new[] {"public"};
+        var includedSchemas = GetIncludedSchemas(dataSource);
+        var excludedTables = GetExcludedTables(dataSource);
         
-        // Check if there are specifically included schemas in connection parameters
+        _logger.LogDebug("Extracting schema for schemas: {Schemas}", string.Join(", ", includedSchemas));
+        
+        await ExtractSchemaInfo(connection, includedSchemas, excludedTables, schemaInfo);
+        await ExtractKeysInformation(connection, includedSchemas, excludedTables, schemaInfo);
+        
+        return schemaInfo.ToString();
+    }
+
+    public async Task<DatabaseInfo?> GetDatabaseInfoAsync(DataSourceDefinition dataSource)
+    {
+        try
+        {
+            var connectionString = dataSource.GetConnectionString();
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+        
+            await using var command = new NpgsqlCommand("SELECT version()", connection);
+            var versionString = await command.ExecuteScalarAsync() as string ?? "";
+        
+            // Parse version from string like "PostgreSQL 14.2 on x86_64-pc-linux-gnu..."
+            var match = System.Text.RegularExpressions.Regex.Match(versionString, @"PostgreSQL (\d+)\.(\d+)");
+            var version = "Unknown";
+            var parsedVersion = new Version();
+        
+            if (match.Success && match.Groups.Count >= 3)
+            {
+                version = $"{match.Groups[1].Value}.{match.Groups[2].Value}";
+                if (Version.TryParse(version, out var parsed))
+                    parsedVersion = parsed;
+            }
+        
+            return new DatabaseInfo
+            {
+                Type = "postgres",
+                Version = version,
+                ParsedVersion = parsedVersion,
+                FullVersionString = versionString
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get database version info for PostgreSQL data source {DataSourceId}", dataSource.Id);
+            return null;
+        }
+    }
+
+    public async Task<string> GetDialectNotesAsync(DataSourceDefinition dataSource)
+    {
+        try
+        {
+            var databaseInfo = await GetDatabaseInfoAsync(dataSource);
+            var version = databaseInfo?.ParsedVersion ?? new Version();
+            
+            // Check for specific features by querying the database
+            var connectionString = dataSource.GetConnectionString();
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync();
+            
+            var features = await DetectPostgresFeatures(connection, version);
+            
+            var notes = new StringBuilder();
+            notes.AppendLine("PostgreSQL-specific notes:");
+            
+            // JSON support
+            if (features.HasJsonb)
+                notes.AppendLine("- JSONB support available with operators like @>, ?, ?&, ?|");
+            else if (features.HasJson)
+                notes.AppendLine("- Basic JSON support available (use JSONB functions with caution)");
+            
+            // Window functions
+            if (features.HasWindowFunctions)
+                notes.AppendLine("- Window functions supported (ROW_NUMBER(), RANK(), LAG(), LEAD(), etc.)");
+            
+            // CTE support
+            if (features.HasCte)
+                notes.AppendLine("- Common Table Expressions (WITH clauses) supported");
+            
+            // Basic syntax notes
+            notes.AppendLine("- Use double quotes for identifiers: \"column_name\"");
+            notes.AppendLine("- String literals use single quotes: 'text'");
+            notes.AppendLine("- Use ILIKE for case-insensitive text matching");
+            notes.AppendLine("- Use LIMIT for row limiting");
+            notes.AppendLine("- Use || for string concatenation");
+            notes.AppendLine("- Use schema.table notation for qualified names");
+            notes.AppendLine("- NOW() or CURRENT_TIMESTAMP for current timestamp");
+            
+            // Version-specific features
+            if (version >= new Version(9, 5))
+                notes.AppendLine("- UPSERT support available with ON CONFLICT clauses");
+            
+            if (version >= new Version(10, 0))
+                notes.AppendLine("- Partitioning support available");
+            
+            if (version >= new Version(12, 0))
+                notes.AppendLine("- Generated columns supported");
+            
+            // Performance tips
+            notes.AppendLine("- Use EXPLAIN (ANALYZE, BUFFERS) to analyze query performance");
+            notes.AppendLine("- Consider using appropriate indexes for WHERE clauses");
+            
+            return notes.ToString();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to generate dialect notes for PostgreSQL data source {DataSourceId}", dataSource.Id);
+            
+            // Return basic dialect notes as fallback
+            return @"PostgreSQL-specific notes:
+- Use double quotes for identifiers: ""column_name""
+- String literals use single quotes: 'text'
+- Use ILIKE for case-insensitive text matching
+- Use LIMIT for row limiting
+- Use || for string concatenation
+- Use schema.table notation for qualified names
+- NOW() or CURRENT_TIMESTAMP for current timestamp";
+        }
+    }
+    
+    private async Task<PostgresFeatures> DetectPostgresFeatures(NpgsqlConnection connection, Version version)
+    {
+        var features = new PostgresFeatures();
+        
+        try
+        {
+            // Check for JSONB support (9.4+)
+            if (version >= new Version(9, 4))
+            {
+                await using var jsonbCmd = new NpgsqlCommand(
+                    "SELECT 1 FROM pg_type WHERE typname = 'jsonb'", connection);
+                var jsonbResult = await jsonbCmd.ExecuteScalarAsync();
+                features.HasJsonb = jsonbResult != null;
+            }
+            
+            // Check for basic JSON support (9.2+)
+            if (version >= new Version(9, 2))
+            {
+                await using var jsonCmd = new NpgsqlCommand(
+                    "SELECT 1 FROM pg_type WHERE typname = 'json'", connection);
+                var jsonResult = await jsonCmd.ExecuteScalarAsync();
+                features.HasJson = jsonResult != null;
+            }
+            
+            // Window functions (8.4+)
+            features.HasWindowFunctions = version >= new Version(8, 4);
+            
+            // CTE support (8.4+)
+            features.HasCte = version >= new Version(8, 4);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Error detecting PostgreSQL features, using version-based defaults");
+            
+            // Fallback to version-based detection
+            features.HasJsonb = version >= new Version(9, 4);
+            features.HasJson = version >= new Version(9, 2);
+            features.HasWindowFunctions = version >= new Version(8, 4);
+            features.HasCte = version >= new Version(8, 4);
+        }
+        
+        return features;
+    }
+    
+    private class PostgresFeatures
+    {
+        public bool HasJsonb { get; set; }
+        public bool HasJson { get; set; }
+        public bool HasWindowFunctions { get; set; }
+        public bool HasCte { get; set; }
+    }
+    
+    public async Task<QueryResult> ExecuteQueryAsync(DataSourceDefinition dataSource, string query)
+    {
+        var result = new QueryResult { SqlQuery = query };
+        
+        try
+        {
+            // Validate the query first
+            var validation = await ValidateQueryAsync(dataSource, query);
+            if (!validation.IsValid)
+            {
+                result.Success = false;
+                result.ErrorMessage = string.Join("; ", validation.Errors);
+                return result;
+            }
+
+            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
+            await connection.OpenAsync();
+
+            // Set query timeout if specified
+            var timeout = GetQueryTimeout(dataSource);
+            
+            await using var command = new NpgsqlCommand(query, connection)
+            {
+                CommandTimeout = timeout
+            };
+
+            await using var reader = await command.ExecuteReaderAsync();
+            result.Data = new List<Dictionary<string, object>>();
+            
+            var rowLimit = GetRowLimit(dataSource);
+            var rowCount = 0;
+            
+            while (await reader.ReadAsync() && (rowLimit <= 0 || rowCount < rowLimit))
+            {
+                var rowData = new Dictionary<string, object>();
+                
+                for (var i = 0; i < reader.FieldCount; i++)
+                {
+                    var columnName = reader.GetName(i);
+                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                    
+                    // Handle PostgreSQL-specific types
+                    if (value != null)
+                    {
+                        value = ConvertPostgresType(value);
+                    }
+                    
+                    rowData[columnName] = value ?? DBNull.Value;
+                }
+                
+                result.Data.Add(rowData);
+                rowCount++;
+            }
+            
+            if (rowLimit > 0 && rowCount >= rowLimit)
+            {
+                _logger.LogWarning("Query result truncated at {RowLimit} rows", rowLimit);
+            }
+            
+            result.Success = true;
+        }
+        catch (NpgsqlException ex)
+        {
+            result.Success = false;
+            result.ErrorMessage = FormatPostgresError(ex);
+            _logger.LogError(ex, "PostgreSQL error executing query against data source {DataSourceId}", dataSource.Id);
+        }
+        catch (Exception ex)
+        {
+            result.Success = false;
+            result.ErrorMessage = ex.Message;
+            _logger.LogError(ex, "Error executing query against data source {DataSourceId}", dataSource.Id);
+        }
+        
+        return result;
+    }
+
+    public async Task<ValidationResult> ValidateQueryAsync(DataSourceDefinition dataSource, string query)
+    {
+        var result = new ValidationResult { IsValid = true };
+        
+        // Check for dangerous SQL
+        if (DangerousSqlPattern.IsMatch(query))
+        {
+            result.IsValid = false;
+            result.Errors.Add("Only SELECT queries are allowed");
+            return result;
+        }
+        
+        // Try to parse the query with PostgreSQL
+        try
+        {
+            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
+            await connection.OpenAsync();
+            
+            // Use EXPLAIN to validate without executing
+            var explainQuery = $"EXPLAIN (FORMAT JSON) {query}";
+            await using var command = new NpgsqlCommand(explainQuery, connection);
+            await command.ExecuteScalarAsync();
+        }
+        catch (NpgsqlException ex)
+        {
+            result.IsValid = false;
+            result.Errors.Add(FormatPostgresError(ex));
+        }
+        
+        return result;
+    }
+
+    public async Task<bool> TestConnectionAsync(DataSourceDefinition dataSource)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
+            await connection.OpenAsync();
+
+            await using var command = new NpgsqlCommand("SELECT 1", connection);
+            await command.ExecuteScalarAsync();
+            
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to connect to PostgreSQL data source {DataSourceId}", dataSource.Id);
+            return false;
+        }
+    }
+
+    public async Task<string?> GetQueryPlanAsync(DataSourceDefinition dataSource, string query)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
+            await connection.OpenAsync();
+            
+            var explainQuery = $"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {query}";
+            await using var command = new NpgsqlCommand(explainQuery, connection);
+            
+            var result = await command.ExecuteScalarAsync();
+            return result?.ToString();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get query plan for data source {DataSourceId}", dataSource.Id);
+            return null;
+        }
+    }
+
+    public async Task<DataSourceMetadata> GetMetadataAsync(DataSourceDefinition dataSource)
+    {
+        var metadata = new DataSourceMetadata
+        {
+            DatabaseType = "PostgreSQL"
+        };
+        
+        try
+        {
+            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
+            await connection.OpenAsync();
+            
+            // Get version
+            await using var versionCmd = new NpgsqlCommand("SELECT version()", connection);
+            var versionResult = await versionCmd.ExecuteScalarAsync();
+            metadata.Version = versionResult?.ToString() ?? "Unknown";
+            
+            // Get available schemas
+            await using var schemaCmd = new NpgsqlCommand(@"
+                SELECT schema_name 
+                FROM information_schema.schemata 
+                WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+                ORDER BY schema_name", connection);
+            
+            await using var reader = await schemaCmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                metadata.AvailableSchemas.Add(reader.GetString(0));
+            }
+            await reader.CloseAsync();
+            
+            // Additional PostgreSQL-specific info
+            metadata.AdditionalInfo["max_connections"] = await GetServerParameter(connection, "max_connections");
+            metadata.AdditionalInfo["server_encoding"] = await GetServerParameter(connection, "server_encoding");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get metadata for data source {DataSourceId}", dataSource.Id);
+        }
+        
+        return metadata;
+    }
+
+    private string[] GetIncludedSchemas(DataSourceDefinition dataSource)
+    {
         if (dataSource.ConnectionParameters.TryGetValue("IncludedSchemas", out var schemasParam))
         {
             var schemasList = schemasParam.Split(',')
@@ -37,30 +404,123 @@ public class PostgresDataSourceProvider : IDataSourceProvider
                 .ToArray();
             
             if (schemasList.Length > 0)
-                includedSchemas = schemasList;
+                return schemasList;
         }
         
-        Console.WriteLine($"includedSchemas: {includedSchemas}");
-        
-        var excludedTables = Array.Empty<string>();
-        
-        // Check if there are specifically excluded tables in connection parameters
+        return new[] { "public" };
+    }
+
+    private string[] GetExcludedTables(DataSourceDefinition dataSource)
+    {
         if (dataSource.ConnectionParameters.TryGetValue("ExcludedTables", out var tablesParam))
         {
-            excludedTables = tablesParam.Split(',')
+            return tablesParam.Split(',')
                 .Select(s => s.Trim())
                 .Where(s => !string.IsNullOrEmpty(s))
                 .ToArray();
         }
+        
+        return Array.Empty<string>();
+    }
 
-        // Query for table information
+    private int GetQueryTimeout(DataSourceDefinition dataSource)
+    {
+        if (dataSource.ConnectionParameters.TryGetValue("QueryTimeout", out var timeoutParam) &&
+            int.TryParse(timeoutParam, out var timeout))
+        {
+            return timeout;
+        }
+        
+        return 30; // Default 30 seconds
+    }
+
+    private int GetRowLimit(DataSourceDefinition dataSource)
+    {
+        if (dataSource.ConnectionParameters.TryGetValue("MaxRows", out var maxRowsParam) &&
+            int.TryParse(maxRowsParam, out var maxRows))
+        {
+            return maxRows;
+        }
+        
+        return 1000; // Default 1000 rows
+    }
+
+    private object ConvertPostgresType(object value)
+    {
+        // Convert PostgreSQL-specific types to JSON-serializable types
+        return value switch
+        {
+            // Arrays
+            Array array => array.Cast<object>().ToList(),
+            // Dates with infinity
+            DateTime dt when dt == DateTime.MinValue => null,
+            DateTime dt when dt == DateTime.MaxValue => null,
+            // NpgsqlPoint, NpgsqlBox, etc. would need custom handling
+            _ => value
+        };
+    }
+
+    private string FormatPostgresError(NpgsqlException ex)
+    {
+        var message = ex.Message;
+    
+        if (ex is PostgresException pgEx)
+        {
+            if (!string.IsNullOrEmpty(pgEx.Detail))
+                message += $" Detail: {pgEx.Detail}";
+            
+            if (!string.IsNullOrEmpty(pgEx.Hint))
+                message += $" Hint: {pgEx.Hint}";
+            
+            if (!string.IsNullOrEmpty(pgEx.Where))
+                message += $" Where: {pgEx.Where}";
+            
+            if (!string.IsNullOrEmpty(pgEx.SchemaName))
+                message += $" Schema: {pgEx.SchemaName}";
+            
+            if (!string.IsNullOrEmpty(pgEx.TableName))
+                message += $" Table: {pgEx.TableName}";
+            
+            if (!string.IsNullOrEmpty(pgEx.ColumnName))
+                message += $" Column: {pgEx.ColumnName}";
+        }
+        else
+        {
+            // Fallback for other NpgsqlException types
+            if (ex.InnerException != null)
+                message += $" Inner: {ex.InnerException.Message}";
+            
+            if (!string.IsNullOrEmpty(ex.Source))
+                message += $" Source: {ex.Source}";
+        }
+    
+        return message;
+    }
+
+    private async Task<string> GetServerParameter(NpgsqlConnection connection, string parameter)
+    {
+        try
+        {
+            await using var cmd = new NpgsqlCommand($"SHOW {parameter}", connection);
+            var result = await cmd.ExecuteScalarAsync();
+            return result?.ToString() ?? "Unknown";
+        }
+        catch
+        {
+            return "Unknown";
+        }
+    }
+
+    private async Task ExtractSchemaInfo(NpgsqlConnection connection, string[] includedSchemas, 
+                                        string[] excludedTables, StringBuilder schemaInfo)
+    {
         var schemasClause = string.Join(",", includedSchemas.Select(s => $"'{s}'"));
         var excludesClause = excludedTables.Length > 0 
             ? $"AND table_name NOT IN ({string.Join(",", excludedTables.Select(t => $"'{t}'"))})" 
             : "";
 
-        Dictionary<string, List<(string tableName, string columnName, string dataType, string isNullable, string defaultValue, string maxLength)>> schemaData = 
-            new();
+        var schemaData = new Dictionary<string, List<(string tableName, string columnName, string dataType, 
+            string isNullable, string defaultValue, string maxLength)>>();
 
         await using var tableCommand = new NpgsqlCommand($@"
             SELECT 
@@ -80,7 +540,6 @@ public class PostgresDataSourceProvider : IDataSourceProvider
 
         await using var reader = await tableCommand.ExecuteReaderAsync();
         
-        // Collect all data first
         while (await reader.ReadAsync())
         {
             var schema = reader.GetString(0);
@@ -101,25 +560,11 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         
         await reader.CloseAsync();
         
-        // Now format the collected data into SQL
-        var currentSchema = "";
-        var currentTable = "";
-        
+        // Format the collected data
         foreach (var schema in schemaData.Keys.OrderBy(k => k))
         {
-            if (schema != currentSchema)
-            {
-                if (!string.IsNullOrEmpty(currentSchema) && !string.IsNullOrEmpty(currentTable))
-                {
-                    schemaInfo.AppendLine(");");
-                    schemaInfo.AppendLine();
-                }
-                
-                currentSchema = schema;
-                currentTable = "";
-                schemaInfo.AppendLine($"-- Schema: {schema}");
-                schemaInfo.AppendLine();
-            }
+            schemaInfo.AppendLine($"-- Schema: {schema}");
+            schemaInfo.AppendLine();
             
             var tableGroups = schemaData[schema].GroupBy(x => x.tableName);
             
@@ -127,109 +572,30 @@ public class PostgresDataSourceProvider : IDataSourceProvider
             {
                 var tableName = tableGroup.Key;
                 var fullTableName = $"{schema}.{tableName}";
-
-                if (fullTableName == currentTable) continue;
-                if (!string.IsNullOrEmpty(currentTable))
-                {
-                    schemaInfo.AppendLine(");");
-                    schemaInfo.AppendLine();
-                }
-                    
-                currentTable = fullTableName;
+                
                 schemaInfo.AppendLine($"CREATE TABLE {fullTableName} (");
-                    
-                var first = true;
-                foreach (var column in tableGroup)
+                
+                var columns = tableGroup.ToList();
+                for (var i = 0; i < columns.Count; i++)
                 {
-                    if (!first)
-                    {
+                    var column = columns[i];
+                    schemaInfo.Append($"    {column.columnName} {column.dataType}{column.maxLength} " +
+                                    $"{column.isNullable}{column.defaultValue}");
+                    
+                    if (i < columns.Count - 1)
                         schemaInfo.AppendLine(",");
-                    }
-                    first = false;
-                        
-                    schemaInfo.Append($"    {column.columnName} {column.dataType}{column.maxLength} {column.isNullable}{column.defaultValue}");
+                    else
+                        schemaInfo.AppendLine();
                 }
-                    
-                schemaInfo.AppendLine();
+                
                 schemaInfo.AppendLine(");");
+                schemaInfo.AppendLine();
             }
         }
-        
-        // Add foreign keys
-        await ExtractKeysInformation(connection, includedSchemas, excludedTables, schemaInfo);
-        
-        return schemaInfo.ToString();
     }
 
-    public async Task<QueryResult> ExecuteQueryAsync(DataSourceDefinition dataSource, string query)
-    {
-        var result = new QueryResult { SqlQuery = query };
-        
-        try
-        {
-            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
-            await connection.OpenAsync();
-
-            await using var command = new NpgsqlCommand(query, connection);
-            
-            // Only allow SELECT statements for security
-            if (!query.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
-            {
-                result.Success = false;
-                result.ErrorMessage = "Only SELECT queries are allowed";
-                return result;
-            }
-
-            await using var reader = await command.ExecuteReaderAsync();
-            result.Data = new List<Dictionary<string, object>>();
-            
-            while (await reader.ReadAsync())
-            {
-                var rowData = new Dictionary<string, object>();
-                
-                for (var i = 0; i < reader.FieldCount; i++)
-                {
-                    var columnName = reader.GetName(i);
-                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                    rowData[columnName] = value ?? DBNull.Value;
-                }
-                
-                result.Data.Add(rowData);
-            }
-            
-            result.Success = true;
-        }
-        catch (Exception ex)
-        {
-            result.Success = false;
-            result.ErrorMessage = ex.Message;
-            _logger.LogError(ex, "Error executing query against data source {DataSourceId}", dataSource.Id);
-        }
-        
-        return result;
-    }
-
-    public async Task<bool> TestConnectionAsync(DataSourceDefinition dataSource)
-    {
-        try
-        {
-            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
-            await connection.OpenAsync();
-
-            await using var command = new NpgsqlCommand("SELECT 1", connection);
-            await command.ExecuteScalarAsync();
-            
-            return true;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to connect to data source {DataSourceId}", dataSource.Id);
-            return false;
-        }
-    }
-    
     private async Task ExtractKeysInformation(NpgsqlConnection connection, string[] includedSchemas, 
-                                              string[] excludedTables, StringBuilder schemaInfo)
+                                            string[] excludedTables, StringBuilder schemaInfo)
     {
         var schemasClause = string.Join(",", includedSchemas.Select(s => $"'{s}'"));
         var excludesClause = excludedTables.Length > 0 
@@ -237,7 +603,6 @@ public class PostgresDataSourceProvider : IDataSourceProvider
             : "";
         
         // Get primary keys
-        schemaInfo.AppendLine();
         schemaInfo.AppendLine("-- Primary Keys");
 
         await using var pkCommand = new NpgsqlCommand($@"
@@ -258,23 +623,18 @@ public class PostgresDataSourceProvider : IDataSourceProvider
                 tc.table_name, 
                 kc.ordinal_position", connection);
 
-        try
-        {
-            await using var pkReader = await pkCommand.ExecuteReaderAsync();
+        await using var pkReader = await pkCommand.ExecuteReaderAsync();
         
-            while (await pkReader.ReadAsync())
-            {
-                var schema = pkReader.GetString(0);
-                var tableName = pkReader.GetString(1);
-                var columnName = pkReader.GetString(2);
-            
-                schemaInfo.AppendLine($"ALTER TABLE {schema}.{tableName} ADD PRIMARY KEY ({columnName});");
-            }
-        }
-        catch (Exception ex)
+        while (await pkReader.ReadAsync())
         {
-            _logger.LogError(ex, "Error extracting primary key information");
+            var schema = pkReader.GetString(0);
+            var tableName = pkReader.GetString(1);
+            var columnName = pkReader.GetString(2);
+            
+            schemaInfo.AppendLine($"ALTER TABLE {schema}.{tableName} ADD PRIMARY KEY ({columnName});");
         }
+        
+        await pkReader.CloseAsync();
         
         // Get foreign keys
         schemaInfo.AppendLine();
@@ -314,7 +674,8 @@ public class PostgresDataSourceProvider : IDataSourceProvider
             var foreignTable = fkReader.GetString(4);
             var foreignColumn = fkReader.GetString(5);
             
-            schemaInfo.AppendLine($"ALTER TABLE {schema}.{tableName} ADD FOREIGN KEY ({columnName}) REFERENCES {foreignSchema}.{foreignTable}({foreignColumn});");
+            schemaInfo.AppendLine($"ALTER TABLE {schema}.{tableName} ADD FOREIGN KEY ({columnName}) " +
+                                $"REFERENCES {foreignSchema}.{foreignTable}({foreignColumn});");
         }
     }
 }

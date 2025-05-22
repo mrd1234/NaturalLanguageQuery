@@ -349,17 +349,34 @@ public class DataImporter
             writer.WriteLine("Exception Details:");
             writer.WriteLine(ex.ToString());
             
-            // If it's a database error, try to log additional details
-            if (ex is PostgresException pgEx)
+            // Fixed PostgreSQL error handling
+            if (ex is NpgsqlException npgsqlEx)
             {
                 writer.WriteLine();
                 writer.WriteLine("PostgreSQL Error Details:");
-                writer.WriteLine($"Error Code: {pgEx.SqlState}");
-                writer.WriteLine($"Constraint: {pgEx.ConstraintName}");
-                writer.WriteLine($"Detail: {pgEx.Detail}");
-                writer.WriteLine($"Column: {pgEx.ColumnName}");
-                writer.WriteLine($"Table: {pgEx.TableName}");
-                writer.WriteLine($"Line: {pgEx.Line}, Position: {pgEx.Position}");
+                writer.WriteLine($"Error Code: {npgsqlEx.SqlState ?? "Unknown"}");
+                
+                if (npgsqlEx is PostgresException pgEx)
+                {
+                    // PostgreSQL server errors - full detail available
+                    writer.WriteLine($"Constraint: {pgEx.ConstraintName ?? "None"}");
+                    writer.WriteLine($"Detail: {pgEx.Detail ?? "None"}");
+                    writer.WriteLine($"Hint: {pgEx.Hint ?? "None"}");
+                    writer.WriteLine($"Where: {pgEx.Where ?? "None"}");
+                    writer.WriteLine($"Column: {pgEx.ColumnName ?? "None"}");
+                    writer.WriteLine($"Table: {pgEx.TableName ?? "None"}");
+                    writer.WriteLine($"Schema: {pgEx.SchemaName ?? "None"}");
+                    writer.WriteLine($"Line: {pgEx.Line}, Position: {pgEx.Position}");
+                }
+                else
+                {
+                    // Other Npgsql errors (connection, timeout, etc.)
+                    writer.WriteLine("Error Type: Connection/Client Error");
+                    if (npgsqlEx.InnerException != null)
+                        writer.WriteLine($"Inner Exception: {npgsqlEx.InnerException.Message}");
+                    if (!string.IsNullOrEmpty(npgsqlEx.Source))
+                        writer.WriteLine($"Source: {npgsqlEx.Source}");
+                }
             }
             
             // Try to include a sample of the file content
@@ -384,8 +401,9 @@ public class DataImporter
     
     private async Task<int> ImportMovement(NpgsqlConnection conn, JsonElement root)
     {
-        var movementId = root.GetProperty("movementId").GetString() ?? 
-                         throw new Exception("Movement ID is required");
+        var movementId = root.GetProperty("movementId").GetString();
+        if (string.IsNullOrEmpty(movementId))
+            throw new Exception("Movement ID is required");
         
         var employeeId = root.GetProperty("employeeId").GetString() ?? "Unknown";
         

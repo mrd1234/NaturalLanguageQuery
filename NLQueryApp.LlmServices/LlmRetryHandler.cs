@@ -24,7 +24,7 @@ public class LlmRetryHandler
             try
             {
                 // Rate limiting: ensure minimum time between requests
-                await EnforceRateLimit(serviceName);
+                await EnforceRateLimitAsync(serviceName);
                 
                 return await operation();
             }
@@ -101,13 +101,14 @@ public class LlmRetryHandler
         };
     }
 
-    private async Task EnforceRateLimit(string serviceName)
+    private async Task EnforceRateLimitAsync(string serviceName)
     {
         // Minimum intervals: Anthropic = 1.2s, Ollama = 0ms (local)
         var minInterval = serviceName.ToLower() == "anthropic" ? 1200 : 0;
         
         if (minInterval == 0) return;
 
+        int delayRequired;
         lock (_lock)
         {
             if (_lastRequestTimes.TryGetValue(serviceName, out var lastRequest))
@@ -115,12 +116,24 @@ public class LlmRetryHandler
                 var timeSinceLastRequest = (DateTime.UtcNow - lastRequest).TotalMilliseconds;
                 if (timeSinceLastRequest < minInterval)
                 {
-                    var delay = (int)(minInterval - timeSinceLastRequest);
-                    Task.Delay(delay).Wait(); // Synchronous wait in lock
+                    delayRequired = (int)(minInterval - timeSinceLastRequest);
                 }
+                else
+                {
+                    delayRequired = 0;
+                }
+            }
+            else
+            {
+                delayRequired = 0;
             }
             
             _lastRequestTimes[serviceName] = DateTime.UtcNow;
+        }
+
+        if (delayRequired > 0)
+        {
+            await Task.Delay(delayRequired);
         }
     }
 }

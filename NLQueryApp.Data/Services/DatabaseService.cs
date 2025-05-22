@@ -703,7 +703,8 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
             messageCommand.Parameters.AddWithValue("@timestamp", DateTime.UtcNow);
             messageCommand.Parameters.AddWithValue("@conversationId", conversationId);
             
-            var messageId = (int)await messageCommand.ExecuteScalarAsync();
+            var messageIdResult = await messageCommand.ExecuteScalarAsync();
+            var messageId = messageIdResult != null ? Convert.ToInt32(messageIdResult) : 0;
             
             // Update the conversation's updated_at timestamp
             await using var updateCommand = new NpgsqlCommand(
