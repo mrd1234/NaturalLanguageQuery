@@ -67,6 +67,26 @@ public class ApiService
         }
     }
     
+    public async Task<string> GetConversationTitleAsync(int id)
+    {
+        try
+        {
+            var response = await _httpClient.GetFromJsonAsync<JsonElement>($"api/conversation/{id}/title");
+            
+            if (response.TryGetProperty("title", out var titleProperty))
+            {
+                return titleProperty.GetString() ?? "New Conversation";
+            }
+            
+            return "New Conversation";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error getting conversation title: {ex.Message}");
+            return "New Conversation";
+        }
+    }
+    
     public async Task<Conversation> CreateConversationAsync(string title)
     {
         try
@@ -100,7 +120,7 @@ public class ApiService
         }
     }
     
-    public async Task<ChatMessage> AddMessageAsync(int conversationId, ChatMessage message)
+    public async Task<AddMessageResponse> AddMessageAsync(int conversationId, ChatMessage message)
     {
         try
         {
@@ -121,7 +141,7 @@ public class ApiService
             var response = await _httpClient.PostAsJsonAsync($"api/conversation/{conversationId}/messages", message);
             response.EnsureSuccessStatusCode();
             
-            var result = await response.Content.ReadFromJsonAsync<ChatMessage>();
+            var result = await response.Content.ReadFromJsonAsync<AddMessageResponse>();
             return result ?? throw new Exception("Server returned null when adding message");
         }
         catch (HttpRequestException ex)
@@ -138,6 +158,40 @@ public class ApiService
         {
             Console.WriteLine($"Error adding message: {ex.Message}");
             throw;
+        }
+    }
+    
+    public async Task<string> PollForTitleUpdateAsync(int conversationId, string initialTitle = "New Conversation")
+    {
+        try
+        {
+            // First poll after 2 seconds
+            await Task.Delay(2000);
+            var title = await GetConversationTitleAsync(conversationId);
+            
+            if (title != initialTitle)
+            {
+                Console.WriteLine($"Title updated after 2 seconds: {title}");
+                return title;
+            }
+            
+            // Second poll after additional 3 seconds (5 seconds total)
+            await Task.Delay(3000);
+            title = await GetConversationTitleAsync(conversationId);
+            
+            if (title != initialTitle)
+            {
+                Console.WriteLine($"Title updated after 5 seconds: {title}");
+                return title;
+            }
+            
+            Console.WriteLine("Title generation timed out or completed with fallback");
+            return title;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error polling for title update: {ex.Message}");
+            return initialTitle;
         }
     }
     

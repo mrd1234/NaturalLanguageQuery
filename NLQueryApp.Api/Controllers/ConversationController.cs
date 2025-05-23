@@ -28,6 +28,20 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
         }
     }
     
+    [HttpGet("{id}/title")]
+    public async Task<ActionResult<object>> GetConversationTitle(int id)
+    {
+        try
+        {
+            var conversation = await dbService.GetConversationAsync(id);
+            return Ok(new { title = conversation.Title });
+        }
+        catch (Exception)
+        {
+            return NotFound();
+        }
+    }
+    
     [HttpPost]
     public async Task<ActionResult<Conversation>> CreateConversation([FromBody] Conversation conversation)
     {
@@ -36,20 +50,36 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
     }
     
     [HttpPost("{conversationId}/messages")]
-    public async Task<ActionResult<ChatMessage>> AddMessage(int conversationId, [FromBody] ChatMessage message)
+    public async Task<ActionResult<AddMessageResponse>> AddMessage(int conversationId, [FromBody] ChatMessage message)
     {
         try
         {
             // Add the message first
             var result = await dbService.AddMessageAsync(conversationId, message);
             
+            var response = new AddMessageResponse
+            {
+                Message = result,
+                TitleGenerationInProgress = false
+            };
+            
             // Check if this is the first user message and trigger title generation asynchronously
             if (message.Role == "user" && !string.IsNullOrWhiteSpace(message.Content))
             {
-                _ = Task.Run(async () => await TryGenerateConversationTitleAsync(conversationId, message.Content));
+                // Check if we should generate a title
+                var conversation = await dbService.GetConversationAsync(conversationId);
+                var userMessageCount = conversation.Messages?.Count(m => m.Role == "user") ?? 0;
+                
+                if (conversation.Title == "New Conversation" && userMessageCount == 1)
+                {
+                    response.TitleGenerationInProgress = true;
+                    
+                    // Start title generation asynchronously without awaiting
+                    _ = Task.Run(async () => await TryGenerateConversationTitleAsync(conversationId, message.Content));
+                }
             }
             
-            return CreatedAtAction(nameof(GetConversation), new { id = conversationId }, result);
+            return CreatedAtAction(nameof(GetConversation), new { id = conversationId }, response);
         }
         catch (Exception)
         {
@@ -106,82 +136,81 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
                 return;
             }
             
-            // Get the default LLM service
-            var defaultServiceName = configuration["LlmSettings:DefaultService"] ?? "ollama";
+            // Generate title using LLM or fallback
+            var titleToUse = await GenerateConversationTitle(userMessage);
             
-            try
-            {
-                var llmService = llmServiceFactory.GetService(defaultServiceName);
-                
-                // Check if the service has a utility model configured
-                if (!llmService.HasModel(ModelType.Utility))
-                {
-                    logger.LogWarning("LLM service {ServiceName} doesn't have utility model configured, using fallback title generation", defaultServiceName);
-                    var fallbackTitle = GenerateFallbackTitle(userMessage);
-                    await UpdateConversationTitleSafely(conversationId, fallbackTitle);
-                    return;
-                }
-                
-                // Generate title with timeout
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-                
-                try
-                {
-                    var titleTask = llmService.GenerateTitleAsync(userMessage);
-                    var completedTask = await Task.WhenAny(titleTask, Task.Delay(15000, cts.Token));
-                    
-                    if (completedTask == titleTask)
-                    {
-                        var generatedTitle = await titleTask;
-                        
-                        if (!string.IsNullOrWhiteSpace(generatedTitle) && generatedTitle != "New Conversation")
-                        {
-                            // Sanitize and validate the title
-                            var sanitizedTitle = SanitizeTitle(generatedTitle);
-                            if (!string.IsNullOrWhiteSpace(sanitizedTitle))
-                            {
-                                await UpdateConversationTitleSafely(conversationId, sanitizedTitle);
-                                logger.LogInformation("Successfully generated and updated title for conversation {ConversationId}: {Title}", 
-                                    conversationId, sanitizedTitle);
-                                return;
-                            }
-                        }
-                        
-                        logger.LogWarning("Generated title was empty or unchanged for conversation {ConversationId}, using fallback", conversationId);
-                    }
-                    else
-                    {
-                        logger.LogWarning("Title generation timed out for conversation {ConversationId}, using fallback", conversationId);
-                        cts.Cancel();
-                    }
-                }
-                catch (Exception titleEx)
-                {
-                    logger.LogWarning(titleEx, "Error during title generation for conversation {ConversationId}, using fallback", conversationId);
-                }
-                
-                // Fallback to simple title generation
-                var fallbackTitle = GenerateFallbackTitle(userMessage);
-                await UpdateConversationTitleSafely(conversationId, fallbackTitle);
-            }
-            catch (ArgumentException ex)
-            {
-                logger.LogWarning("LLM service {ServiceName} not available for title generation: {Error}, using fallback", defaultServiceName, ex.Message);
-                var fallbackTitle = GenerateFallbackTitle(userMessage);
-                await UpdateConversationTitleSafely(conversationId, fallbackTitle);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Error getting LLM service {ServiceName} for conversation {ConversationId}, using fallback", 
-                    defaultServiceName, conversationId);
-                var fallbackTitle = GenerateFallbackTitle(userMessage);
-                await UpdateConversationTitleSafely(conversationId, fallbackTitle);
-            }
+            // Update conversation title
+            await UpdateConversationTitleSafely(conversationId, titleToUse);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Unexpected error during title generation for conversation {ConversationId}", conversationId);
         }
+    }
+    
+    private async Task<string> GenerateConversationTitle(string userMessage)
+    {
+        // Get the default LLM service
+        var defaultServiceName = configuration["LlmSettings:DefaultService"] ?? "ollama";
+        
+        try
+        {
+            var llmService = llmServiceFactory.GetService(defaultServiceName);
+            
+            // Check if the service has a utility model configured
+            if (!llmService.HasModel(ModelType.Utility))
+            {
+                logger.LogWarning("LLM service {ServiceName} doesn't have utility model configured, using fallback title generation", defaultServiceName);
+                return GenerateFallbackTitle(userMessage);
+            }
+            
+            // Generate title with reduced timeout (10 seconds instead of 15)
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            
+            try
+            {
+                var titleTask = llmService.GenerateTitleAsync(userMessage);
+                var completedTask = await Task.WhenAny(titleTask, Task.Delay(10000, cts.Token));
+                
+                if (completedTask == titleTask)
+                {
+                    var generatedTitle = await titleTask;
+                    
+                    if (!string.IsNullOrWhiteSpace(generatedTitle) && generatedTitle != "New Conversation")
+                    {
+                        // Sanitize and validate the title
+                        var sanitizedTitle = SanitizeTitle(generatedTitle);
+                        if (!string.IsNullOrWhiteSpace(sanitizedTitle))
+                        {
+                            logger.LogInformation("Successfully generated title for conversation: {Title}", sanitizedTitle);
+                            return sanitizedTitle;
+                        }
+                    }
+                    
+                    logger.LogWarning("Generated title was empty or unchanged, using fallback");
+                }
+                else
+                {
+                    logger.LogWarning("Title generation timed out after 10 seconds, using fallback");
+                    cts.Cancel();
+                }
+            }
+            catch (Exception titleEx)
+            {
+                logger.LogWarning(titleEx, "Error during title generation, using fallback");
+            }
+        }
+        catch (ArgumentException ex)
+        {
+            logger.LogWarning("LLM service {ServiceName} not available for title generation: {Error}, using fallback", defaultServiceName, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error getting LLM service {ServiceName}, using fallback", defaultServiceName);
+        }
+        
+        // Fallback to simple title generation
+        return GenerateFallbackTitle(userMessage);
     }
     
     private async Task UpdateConversationTitleSafely(int conversationId, string title)
@@ -192,6 +221,10 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
             if (!success)
             {
                 logger.LogWarning("Failed to update title in database for conversation {ConversationId}", conversationId);
+            }
+            else
+            {
+                logger.LogInformation("Successfully updated title for conversation {ConversationId}: {Title}", conversationId, title);
             }
         }
         catch (Exception ex)

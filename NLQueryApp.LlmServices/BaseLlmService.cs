@@ -69,10 +69,7 @@ public abstract class BaseLlmService : ILlmService
                 return GenerateFallbackTitle(userQuestion);
             }
 
-            var prompt = $@"Generate a concise, descriptive title (5-8 words maximum) for this database query request. 
-Do not include quotes or extra formatting. Just return the title text.
-
-User question: {userQuestion}";
+            var prompt = CreateTitleGenerationPrompt(userQuestion);
 
             try
             {
@@ -172,6 +169,31 @@ User question: {userQuestion}";
     public abstract bool HasModel(ModelType modelType);
 
     // Shared implementation
+    private string CreateTitleGenerationPrompt(string userQuestion)
+    {
+        return $@"You are creating a concise title for a database query about team movements and employee data.
+
+Context: This is a team movements database containing information about:
+- Employee movements between positions/departments
+- Movement statuses (Completed, Expired, Rejected, etc.)
+- Movement types (permanent, temporary, secondments)
+- Participants, managers, job information
+- Contract details and scheduling
+- History events and workflow data
+
+Generate a concise, descriptive title (4-8 words maximum) that captures what the user is asking about.
+Focus on the key entities and action they're interested in.
+Do not include quotes or extra formatting. Just return the title text.
+
+Examples:
+- ""what movements are currently active?"" → ""Active Team Movements""
+- ""how many people moved last month?"" → ""Monthly Movement Count""
+- ""which managers approve the most movements?"" → ""Manager Approval Activity""
+- ""what day of the week do movements usually expire on?"" → ""Movement Expiration Days""
+
+User question: {userQuestion}";
+    }
+
     protected string CreateUserPrompt(LlmQueryRequest request)
     {
         if (!string.IsNullOrEmpty(request.PreviousError))
