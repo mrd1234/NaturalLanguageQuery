@@ -19,7 +19,7 @@ public class SchemaAnalyzer
     public ConcurrentDictionary<string, HashSet<LookupItem>> Brands { get; } = new();
     public ConcurrentDictionary<string, HashSet<string>> Groups { get; } = new();
     public ConcurrentDictionary<string, HashSet<LookupItem>> Departments { get; } = new();
-    public ConcurrentDictionary<string, HashSet<LookupItem>> CostCentres { get; } = new();
+    public ConcurrentDictionary<string, HashSet<CostCentreLookupItem>> CostCentres { get; } = new();
     public ConcurrentDictionary<string, HashSet<string>> ParticipantRoles { get; } = new();
     public ConcurrentDictionary<string, HashSet<string>> JobRoles { get; } = new();
     public ConcurrentDictionary<string, HashSet<string>> MutualFlags { get; } = new();
@@ -128,6 +128,19 @@ public class SchemaAnalyzer
                 }
             }
             
+            // Process contracts - NEW
+            if (root.TryGetProperty("currentContract", out var currentContractElement) &&
+                currentContractElement.ValueKind == JsonValueKind.Object)
+            {
+                ProcessContract(currentContractElement);
+            }
+            
+            if (root.TryGetProperty("newContract", out var newContractElement) &&
+                newContractElement.ValueKind == JsonValueKind.Object)
+            {
+                ProcessContract(newContractElement);
+            }
+            
             // Process history
             if (root.TryGetProperty("history", out var historyElement) &&
                 historyElement.ValueKind == JsonValueKind.Array)
@@ -182,8 +195,6 @@ public class SchemaAnalyzer
                     }
                 }
             }
-            
-            // Note: Removed ProcessContract calls as these shouldn't be in SchemaAnalyzer
         }
         catch (Exception ex)
         {
@@ -261,6 +272,7 @@ public class SchemaAnalyzer
                 AddToLookup(Departments, new LookupItem(deptCode, deptName));
             }
             
+            // Basic cost centre from position (no geographic data here)
             if (positionElement.TryGetProperty("costCentre", out var ccCodeElement) &&
                 ccCodeElement.ValueKind == JsonValueKind.String)
             {
@@ -273,7 +285,7 @@ public class SchemaAnalyzer
                     ccName = ccNameElement.GetString() ?? "Unknown";
                 }
                 
-                AddToLookup(CostCentres, new LookupItem(ccCode, ccName));
+                AddToLookup(CostCentres, new CostCentreLookupItem(ccCode, ccName));
             }
             
             if (positionElement.TryGetProperty("jobRole", out var jobRoleElement) &&
@@ -281,6 +293,68 @@ public class SchemaAnalyzer
             {
                 var jobRole = jobRoleElement.GetString() ?? "Unknown";
                 AddToLookup(JobRoles, jobRole);
+            }
+        }
+        
+        // Process manager cost centre with geographic data - THIS IS THE KEY ADDITION
+        if (jobInfoElement.TryGetProperty("manager", out var managerElement) &&
+            managerElement.ValueKind == JsonValueKind.Object)
+        {
+            if (managerElement.TryGetProperty("costCentre", out var managerCostCentreElement) &&
+                managerCostCentreElement.ValueKind == JsonValueKind.Object)
+            {
+                // This is the nested cost centre object with geographic data
+                var ccCode = "Unknown";
+                var ccName = "Unknown";
+                string? addressFormatted = null;
+                decimal? latitude = null;
+                decimal? longitude = null;
+                
+                if (managerCostCentreElement.TryGetProperty("costCentre", out var ccCodeEl) &&
+                    ccCodeEl.ValueKind == JsonValueKind.String)
+                {
+                    ccCode = ccCodeEl.GetString() ?? "Unknown";
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("name", out var ccNameEl) &&
+                    ccNameEl.ValueKind == JsonValueKind.String)
+                {
+                    ccName = ccNameEl.GetString() ?? "Unknown";
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("addressFormatted", out var addressEl) &&
+                    addressEl.ValueKind == JsonValueKind.String)
+                {
+                    addressFormatted = addressEl.GetString();
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("lat", out var latEl))
+                {
+                    if (latEl.ValueKind == JsonValueKind.Number && latEl.TryGetDecimal(out var lat))
+                    {
+                        latitude = lat;
+                    }
+                    else if (latEl.ValueKind == JsonValueKind.String && 
+                             decimal.TryParse(latEl.GetString(), out var latFromString))
+                    {
+                        latitude = latFromString;
+                    }
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("lng", out var lngEl))
+                {
+                    if (lngEl.ValueKind == JsonValueKind.Number && lngEl.TryGetDecimal(out var lng))
+                    {
+                        longitude = lng;
+                    }
+                    else if (lngEl.ValueKind == JsonValueKind.String && 
+                             decimal.TryParse(lngEl.GetString(), out var lngFromString))
+                    {
+                        longitude = lngFromString;
+                    }
+                }
+                
+                AddToLookup(CostCentres, new CostCentreLookupItem(ccCode, ccName, addressFormatted, latitude, longitude));
             }
         }
     }
@@ -316,6 +390,7 @@ public class SchemaAnalyzer
             AddToLookup(Departments, new LookupItem(deptCode, deptName));
         }
         
+        // Basic cost centre from participant (no geographic data available here)
         if (participant.TryGetProperty("costCentre", out var ccCodeElement) &&
             ccCodeElement.ValueKind == JsonValueKind.String)
         {
@@ -328,7 +403,63 @@ public class SchemaAnalyzer
                 ccName = ccNameElement.GetString() ?? "Unknown";
             }
             
-            AddToLookup(CostCentres, new LookupItem(ccCode, ccName));
+            // Only basic cost centre info available in participants array
+            AddToLookup(CostCentres, new CostCentreLookupItem(ccCode, ccName));
+        }
+    }
+    
+    // NEW METHOD: Process contract data to extract mutual flags and break types
+    private void ProcessContract(JsonElement contractElement)
+    {
+        // Extract mutual flags
+        if (contractElement.TryGetProperty("mutualFlags", out var flagsElement) &&
+            flagsElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var flag in flagsElement.EnumerateArray())
+            {
+                if (flag.ValueKind == JsonValueKind.String)
+                {
+                    var flagValue = flag.GetString() ?? "Unknown";
+                    AddToLookup(MutualFlags, flagValue);
+                }
+            }
+        }
+        
+        // Extract break types from weeks
+        if (contractElement.TryGetProperty("weeks", out var weeksElement) &&
+            weeksElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var week in weeksElement.EnumerateArray())
+            {
+                if (week.ValueKind == JsonValueKind.Object)
+                {
+                    // Check each day of the week
+                    string[] days = { "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
+                    foreach (var day in days)
+                    {
+                        if (week.TryGetProperty(day, out var dayElement) &&
+                            dayElement.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var shift in dayElement.EnumerateArray())
+                            {
+                                if (shift.ValueKind == JsonValueKind.Object &&
+                                    shift.TryGetProperty("breaks", out var breaksElement) &&
+                                    breaksElement.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var breakItem in breaksElement.EnumerateArray())
+                                    {
+                                        if (breakItem.ValueKind == JsonValueKind.String)
+                                        {
+                                            var breakType = breakItem.GetString() ?? "Unknown";
+                                            AddToLookup(BreakTypes, breakType);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     
@@ -338,7 +469,99 @@ public class SchemaAnalyzer
         foreach (var property in historyEvent.EnumerateObject())
         {
             AddToLookup(HistoryEventTypes, property.Name);
+            
+            // Process the event data for cost centre information
+            var eventData = property.Value;
+            if (eventData.ValueKind == JsonValueKind.Object)
+            {
+                ProcessHistoryEventData(eventData);
+            }
+            
             break; // Only need the first property
+        }
+    }
+
+    private void ProcessHistoryEventData(JsonElement eventData)
+    {
+        // Check for newManager with nested cost centre data
+        if (eventData.TryGetProperty("newManager", out var newManagerElement) &&
+            newManagerElement.ValueKind == JsonValueKind.Object)
+        {
+            ProcessManagerCostCentre(newManagerElement);
+        }
+        
+        // Check for participant with nested cost centre data
+        if (eventData.TryGetProperty("participant", out var participantElement) &&
+            participantElement.ValueKind == JsonValueKind.Object)
+        {
+            ProcessManagerCostCentre(participantElement);
+        }
+        
+        // Process contract data in history events
+        if (eventData.TryGetProperty("contract", out var contractElement) &&
+            contractElement.ValueKind == JsonValueKind.Object)
+        {
+            ProcessContract(contractElement);
+        }
+    }
+
+    private void ProcessManagerCostCentre(JsonElement managerElement)
+    {
+        if (managerElement.TryGetProperty("costCentre", out var costCentreElement) &&
+            costCentreElement.ValueKind == JsonValueKind.Object)
+        {
+            // This is the nested cost centre object with geographic data
+            var ccCode = "Unknown";
+            var ccName = "Unknown";
+            string? addressFormatted = null;
+            decimal? latitude = null;
+            decimal? longitude = null;
+            
+            if (costCentreElement.TryGetProperty("costCentre", out var ccCodeEl) &&
+                ccCodeEl.ValueKind == JsonValueKind.String)
+            {
+                ccCode = ccCodeEl.GetString() ?? "Unknown";
+            }
+            
+            if (costCentreElement.TryGetProperty("name", out var ccNameEl) &&
+                ccNameEl.ValueKind == JsonValueKind.String)
+            {
+                ccName = ccNameEl.GetString() ?? "Unknown";
+            }
+            
+            if (costCentreElement.TryGetProperty("addressFormatted", out var addressEl) &&
+                addressEl.ValueKind == JsonValueKind.String)
+            {
+                addressFormatted = addressEl.GetString();
+            }
+            
+            if (costCentreElement.TryGetProperty("lat", out var latEl))
+            {
+                if (latEl.ValueKind == JsonValueKind.Number && latEl.TryGetDecimal(out var lat))
+                {
+                    latitude = lat;
+                }
+                else if (latEl.ValueKind == JsonValueKind.String && 
+                         decimal.TryParse(latEl.GetString(), out var latFromString))
+                {
+                    latitude = latFromString;
+                }
+            }
+            
+            if (costCentreElement.TryGetProperty("lng", out var lngEl))
+            {
+                if (lngEl.ValueKind == JsonValueKind.Number && lngEl.TryGetDecimal(out var lng))
+                {
+                    longitude = lng;
+                }
+                else if (lngEl.ValueKind == JsonValueKind.String && 
+                         decimal.TryParse(lngEl.GetString(), out var lngFromString))
+                {
+                    longitude = lngFromString;
+                }
+            }
+            
+            AddToLookup(CostCentres, new CostCentreLookupItem(ccCode, ccName, addressFormatted, latitude, longitude));
         }
     }
     

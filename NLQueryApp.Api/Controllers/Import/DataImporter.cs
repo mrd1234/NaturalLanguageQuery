@@ -183,7 +183,35 @@ public class DataImporter
             
             try
             {
-                // Import movement
+                // STEP 1: Process cost centres with location data FIRST
+                // This ensures cost centres are created/updated with location data before other imports
+                try
+                {
+                    // Process cost centres from current job info
+                    if (root.TryGetProperty("currentJobInfo", out var currentJobInfoElement))
+                    {
+                        await ProcessAndStoreCostCentreDetails(conn, currentJobInfoElement);
+                    }
+                    
+                    // Process cost centres from new job info
+                    if (root.TryGetProperty("newJobInfo", out var newJobInfoElement))
+                    {
+                        await ProcessAndStoreCostCentreDetails(conn, newJobInfoElement);
+                    }
+                    
+                    // Process cost centres from history events
+                    if (root.TryGetProperty("history", out var historyElement))
+                    {
+                        await ProcessHistoryEventCostCentres(conn, historyElement);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Warnings.Add($"Error processing cost centre location data: {ex.Message}");
+                    // Continue with import even if cost centre processing fails
+                }
+                
+                // STEP 2: Import movement (existing code)
                 int movementId;
                 try
                 {
@@ -194,6 +222,7 @@ public class DataImporter
                     throw new Exception($"Error importing movement: {ex.Message}", ex);
                 }
                 
+                // STEP 3: Import other entities (existing code)
                 try
                 {
                     // Import participants
@@ -1920,6 +1949,172 @@ public class DataImporter
         {
             Warnings.Add($"Error parsing {fieldName} as boolean: {ex.Message}");
             return defaultValue;
+        }
+    }
+    
+    private async Task ProcessAndStoreCostCentreDetails(NpgsqlConnection conn, JsonElement jobInfoElement)
+    {
+        // Process manager cost centre with geographic data
+        if (jobInfoElement.TryGetProperty("manager", out var managerElement) &&
+            managerElement.ValueKind == JsonValueKind.Object)
+        {
+            if (managerElement.TryGetProperty("costCentre", out var managerCostCentreElement) &&
+                managerCostCentreElement.ValueKind == JsonValueKind.Object)
+            {
+                // Extract detailed cost centre information
+                var ccCode = "Unknown";
+                var ccName = "Unknown";
+                string? addressFormatted = null;
+                decimal? latitude = null;
+                decimal? longitude = null;
+                
+                if (managerCostCentreElement.TryGetProperty("costCentre", out var ccCodeEl) &&
+                    ccCodeEl.ValueKind == JsonValueKind.String)
+                {
+                    ccCode = ccCodeEl.GetString() ?? "Unknown";
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("name", out var ccNameEl) &&
+                    ccNameEl.ValueKind == JsonValueKind.String)
+                {
+                    ccName = ccNameEl.GetString() ?? "Unknown";
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("addressFormatted", out var addressEl) &&
+                    addressEl.ValueKind == JsonValueKind.String)
+                {
+                    addressFormatted = addressEl.GetString();
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("lat", out var latEl))
+                {
+                    latitude = SafeParseDecimal(latEl, "latitude");
+                }
+                
+                if (managerCostCentreElement.TryGetProperty("lng", out var lngEl))
+                {
+                    longitude = SafeParseDecimal(lngEl, "longitude");
+                }
+                
+                // Update or insert the cost centre with location data
+                await UpsertCostCentreWithLocation(conn, ccCode, ccName, addressFormatted, latitude, longitude);
+            }
+        }
+    }
+
+    private async Task UpsertCostCentreWithLocation(NpgsqlConnection conn, string ccCode, string ccName, 
+        string? addressFormatted, decimal? latitude, decimal? longitude)
+    {
+        try
+        {
+            await using var cmd = new NpgsqlCommand(@"
+                INSERT INTO team_movements.cost_centres (cost_centre_code, cost_centre_name, formatted_address, latitude, longitude)
+                VALUES (@code, @name, @formattedAddress, @latitude, @longitude)
+                ON CONFLICT (cost_centre_code) 
+                DO UPDATE SET 
+                    cost_centre_name = EXCLUDED.cost_centre_name,
+                    formatted_address = COALESCE(EXCLUDED.formatted_address, team_movements.cost_centres.formatted_address),
+                    latitude = COALESCE(EXCLUDED.latitude, team_movements.cost_centres.latitude),
+                    longitude = COALESCE(EXCLUDED.longitude, team_movements.cost_centres.longitude)
+                WHERE EXCLUDED.formatted_address IS NOT NULL OR EXCLUDED.latitude IS NOT NULL OR EXCLUDED.longitude IS NOT NULL;
+            ", conn);
+            
+            cmd.Parameters.AddWithValue("@code", ccCode);
+            cmd.Parameters.AddWithValue("@name", ccName);
+            cmd.Parameters.AddWithValue("@formattedAddress", (object?)addressFormatted ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@latitude", (object?)latitude ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@longitude", (object?)longitude ?? DBNull.Value);
+            
+            await cmd.ExecuteNonQueryAsync();
+            
+            if (!string.IsNullOrEmpty(addressFormatted) || latitude.HasValue || longitude.HasValue)
+            {
+                Console.WriteLine($"Updated cost centre {ccCode} with location data: {addressFormatted}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"Failed to update cost centre {ccCode} with location data: {ex.Message}");
+        }
+    }
+
+    // Also process history events for cost centre data
+    private async Task ProcessHistoryEventCostCentres(NpgsqlConnection conn, JsonElement historyElement)
+    {
+        if (historyElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var eventObj in historyElement.EnumerateArray())
+            {
+                if (eventObj.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var eventProperty in eventObj.EnumerateObject())
+                    {
+                        var eventData = eventProperty.Value;
+                        if (eventData.ValueKind == JsonValueKind.Object)
+                        {
+                            // Check for newManager with nested cost centre data
+                            if (eventData.TryGetProperty("newManager", out var newManagerElement) &&
+                                newManagerElement.ValueKind == JsonValueKind.Object)
+                            {
+                                await ProcessManagerCostCentreInHistory(conn, newManagerElement);
+                            }
+                            
+                            // Check for participant with nested cost centre data
+                            if (eventData.TryGetProperty("participant", out var participantElement) &&
+                                participantElement.ValueKind == JsonValueKind.Object)
+                            {
+                                await ProcessManagerCostCentreInHistory(conn, participantElement);
+                            }
+                        }
+                        break; // Only process the first property (event type)
+                    }
+                }
+            }
+        }
+    }
+
+    private async Task ProcessManagerCostCentreInHistory(NpgsqlConnection conn, JsonElement managerElement)
+    {
+        if (managerElement.TryGetProperty("costCentre", out var costCentreElement) &&
+            costCentreElement.ValueKind == JsonValueKind.Object)
+        {
+            // Extract detailed cost centre information
+            var ccCode = "Unknown";
+            var ccName = "Unknown";
+            string? addressFormatted = null;
+            decimal? latitude = null;
+            decimal? longitude = null;
+            
+            if (costCentreElement.TryGetProperty("costCentre", out var ccCodeEl) &&
+                ccCodeEl.ValueKind == JsonValueKind.String)
+            {
+                ccCode = ccCodeEl.GetString() ?? "Unknown";
+            }
+            
+            if (costCentreElement.TryGetProperty("name", out var ccNameEl) &&
+                ccNameEl.ValueKind == JsonValueKind.String)
+            {
+                ccName = ccNameEl.GetString() ?? "Unknown";
+            }
+            
+            if (costCentreElement.TryGetProperty("addressFormatted", out var addressEl) &&
+                addressEl.ValueKind == JsonValueKind.String)
+            {
+                addressFormatted = addressEl.GetString();
+            }
+            
+            if (costCentreElement.TryGetProperty("lat", out var latEl))
+            {
+                latitude = SafeParseDecimal(latEl, "latitude");
+            }
+            
+            if (costCentreElement.TryGetProperty("lng", out var lngEl))
+            {
+                longitude = SafeParseDecimal(lngEl, "longitude");
+            }
+            
+            // Update cost centre with location data
+            await UpsertCostCentreWithLocation(conn, ccCode, ccName, addressFormatted, latitude, longitude);
         }
     }
 }

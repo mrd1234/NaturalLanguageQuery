@@ -634,14 +634,14 @@
                 });
             }
 
-// Update UI to show user message
+            // Update UI to show user message
             StateHasChanged();
             await JSRuntime.InvokeVoidAsync("scrollToBottom", "message-container");
 
-// Process the query
+            // Process the query
             var result = await ApiService.ProcessQueryAsync(queryText, selectedDataSource.Id, selectedLlmService);
 
-// Create assistant response
+            // Create assistant response
             string assistantContent;
             if (result.Success)
             {
@@ -649,7 +649,7 @@
             }
             else
             {
-                assistantContent = $"I encountered an error: {result.ErrorMessage}";
+                assistantContent = $"I encountered an error: {result.ErrorMessage}: {result.SqlQuery}";
             }
 
             var assistantMessage = new ChatMessage
@@ -663,10 +663,10 @@
             var assistantResponse = await ApiService.AddMessageAsync(ConversationId, assistantMessage);
             messages.Add(assistantResponse.Message);
 
-// Store the query result
+            // Store the query result
             queryResults[assistantResponse.Message.Id] = result;
 
-// Update UI
+            // Update UI
             StateHasChanged();
             await JSRuntime.InvokeVoidAsync("scrollToBottom", "message-container");
         }
@@ -685,7 +685,7 @@
     {
         if (firstRender)
         {
-// Prevent body scrolling when chat loads
+            // Prevent body scrolling when chat loads
             await JSRuntime.InvokeVoidAsync("eval", @"
             document.body.style.overflow = 'hidden';
             document.documentElement.style.overflow = 'hidden';
@@ -709,7 +709,7 @@
 
     public async ValueTask DisposeAsync()
     {
-// Restore body scrolling when leaving chat
+        // Restore body scrolling when leaving chat
         try
         {
             await JSRuntime.InvokeVoidAsync("eval", @"
@@ -721,7 +721,7 @@
         }
         catch
         {
-// Ignore errors during disposal
+            // Ignore errors during disposal
         }
     }
 

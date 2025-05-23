@@ -590,19 +590,27 @@ public class SchemaCreator
         }
     }
         
-    private async Task InsertCostCentres(NpgsqlConnection conn, ConcurrentDictionary<string, HashSet<LookupItem>> costCentres)
+    private async Task InsertCostCentres(NpgsqlConnection conn, ConcurrentDictionary<string, HashSet<CostCentreLookupItem>> costCentres)
     {
         if (costCentres.TryGetValue("values", out var ccSet))
         {
             foreach (var cc in ccSet)
             {
                 await ExecuteNonQuery(conn, @"
-                        INSERT INTO team_movements.cost_centres (cost_centre_code, cost_centre_name)
-                        VALUES (@code, @name)
-                        ON CONFLICT (cost_centre_code) DO NOTHING;
+                        INSERT INTO team_movements.cost_centres (cost_centre_code, cost_centre_name, formatted_address, latitude, longitude)
+                        VALUES (@code, @name, @formattedAddress, @latitude, @longitude)
+                        ON CONFLICT (cost_centre_code) 
+                        DO UPDATE SET 
+                            cost_centre_name = EXCLUDED.cost_centre_name,
+                            formatted_address = COALESCE(EXCLUDED.formatted_address, team_movements.cost_centres.formatted_address),
+                            latitude = COALESCE(EXCLUDED.latitude, team_movements.cost_centres.latitude),
+                            longitude = COALESCE(EXCLUDED.longitude, team_movements.cost_centres.longitude);
                     ", 
                     new NpgsqlParameter("@code", cc.Code),
-                    new NpgsqlParameter("@name", cc.Name));
+                    new NpgsqlParameter("@name", cc.Name),
+                    new NpgsqlParameter("@formattedAddress", (object?)cc.FormattedAddress ?? DBNull.Value),
+                    new NpgsqlParameter("@latitude", (object?)cc.Latitude ?? DBNull.Value),
+                    new NpgsqlParameter("@longitude", (object?)cc.Longitude ?? DBNull.Value));
             }
         }
     }
