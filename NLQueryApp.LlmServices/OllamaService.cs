@@ -59,4 +59,6 @@ public class OllamaService : BaseLlmService
     }
 
     protected override string GetServiceName() => "ollama";
+    
+    public override bool HasApiKey() => true; 
 }

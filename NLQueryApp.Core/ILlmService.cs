@@ -3,4 +3,5 @@
 public interface ILlmService
 {
     Task<LlmQueryResponse> GenerateSqlQueryAsync(LlmQueryRequest request);
+    bool HasApiKey();
 }

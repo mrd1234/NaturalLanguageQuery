@@ -29,6 +29,7 @@
                     </h3>
                     <ol class="card-text">
                         <li><strong>Connect Your Database</strong> - Set up secure connections to your PostgreSQL databases</li>
+                        <li><strong>Configure LLM Provider</strong> - Choose and configure your preferred AI language model</li>
                         <li><strong>Start a Conversation</strong> - Create a new chat session for your queries</li>
                         <li><strong>Ask Natural Questions</strong> - Type questions like "Show me all sales from last month"</li>
                         <li><strong>Get Instant Results</strong> - View your data along with the generated SQL query</li>
@@ -47,6 +48,7 @@
                                 <li><i class="bi bi-check-circle text-success"></i> Natural language processing</li>
                                 <li><i class="bi bi-check-circle text-success"></i> Multiple LLM support</li>
                                 <li><i class="bi bi-check-circle text-success"></i> Secure data source management</li>
+                                <li><i class="bi bi-check-circle text-success"></i> PostgreSQL database support</li>
                             </ul>
                         </div>
                         <div class="col-md-6">
@@ -54,7 +56,36 @@
                                 <li><i class="bi bi-check-circle text-success"></i> Conversation history</li>
                                 <li><i class="bi bi-check-circle text-success"></i> Schema context support</li>
                                 <li><i class="bi bi-check-circle text-success"></i> Real-time query execution</li>
+                                <li><i class="bi bi-check-circle text-success"></i> SQL query transparency</li>
                             </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mb-4 shadow-sm">
+                <div class="card-body">
+                    <h3 class="card-title">
+                        <i class="bi bi-robot text-info"></i> Supported LLM Providers
+                    </h3>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h5>Ollama (Local)</h5>
+                            <p class="small">Run language models locally on your own hardware. No API key required.</p>
+                        </div>
+                        <div class="col-md-6">
+                            <h5>Anthropic Claude</h5>
+                            <p class="small">Advanced AI assistant with strong reasoning capabilities.</p>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <h5>OpenAI GPT-4</h5>
+                            <p class="small">Industry-leading language model with broad capabilities.</p>
+                        </div>
+                        <div class="col-md-6">
+                            <h5>Google Gemini</h5>
+                            <p class="small">Google's multimodal AI model for various tasks.</p>
                         </div>
                     </div>
                 </div>
@@ -66,6 +97,9 @@
                 </a>
                 <a href="/datasources" class="btn btn-outline-primary btn-lg ms-2">
                     <i class="bi bi-database"></i> Configure Data Sources
+                </a>
+                <a href="/llm-providers" class="btn btn-outline-primary btn-lg ms-2">
+                    <i class="bi bi-robot"></i> Configure LLM Providers
                 </a>
             </div>
         </div>

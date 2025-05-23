@@ -19,7 +19,7 @@
                     <a href="/datasources" class="btn btn-outline-secondary me-2">
                         <i class="bi bi-database"></i> Manage Data Sources
                     </a>
-                    <button class="btn btn-primary" @onclick="CreateNewConversation" disabled="@isCreatingConversation">
+                    <button class="btn btn-primary" @onclick="CreateNewConversation" disabled="@(isCreatingConversation || !canCreateConversation)">
                         @if (isCreatingConversation)
                         {
                             <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
@@ -43,6 +43,21 @@
                 </div>
             }
             
+            @if (!canCreateConversation && !isLoading)
+            {
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    @if ((dataSourceCount ?? 0) == 0)
+                    {
+                        <span>Please <a href="/datasources">configure a data source</a> before starting a conversation.</span>
+                    }
+                    else if ((activeLlmCount ?? 0) == 0)
+                    {
+                        <span>Please <a href="/llm-providers">configure an LLM provider</a> before starting a conversation.</span>
+                    }
+                </div>
+            }
+            
             @if (isLoading)
             {
                 <div class="d-flex justify-content-center p-4">
@@ -58,7 +73,7 @@
                         <i class="bi bi-chat-dots display-1 text-muted mb-3"></i>
                         <h4>No conversations yet</h4>
                         <p class="text-muted">Start your first conversation to begin querying your data with natural language.</p>
-                        <button class="btn btn-primary btn-lg" @onclick="CreateNewConversation" disabled="@isCreatingConversation">
+                        <button class="btn btn-primary btn-lg" @onclick="CreateNewConversation" disabled="@(isCreatingConversation || !canCreateConversation)">
                             @if (isCreatingConversation)
                             {
                                 <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
@@ -69,6 +84,12 @@
                             }
                             Start Your First Conversation
                         </button>
+                        @if (!canCreateConversation)
+                        {
+                            <p class="text-muted mt-3">
+                                <small>Configure a <a href="/datasources">data source</a> and <a href="/llm-providers">LLM provider</a> first.</small>
+                            </p>
+                        }
                     </div>
                 </div>
             }
@@ -145,6 +166,7 @@
                     <h6>How to use this app:</h6>
                     <ol class="small">
                         <li><strong>Set up a data source</strong> - Connect to your database</li>
+                        <li><strong>Configure LLM provider</strong> - Enable AI query generation</li>
                         <li><strong>Start a conversation</strong> - Create a new chat session</li>
                         <li><strong>Ask questions</strong> - Use natural language to query your data</li>
                         <li><strong>Get results</strong> - See your data and the generated SQL</li>
@@ -197,6 +219,52 @@
                     }
                 </div>
             </div>
+
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-robot"></i> LLM Providers
+                    </h5>
+                </div>
+                <div class="card-body">
+                    @if (isLoadingLlmServices)
+                    {
+                        <div class="d-flex justify-content-center">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    }
+                    else if (activeLlmCount == null || activeLlmCount == 0)
+                    {
+                        <div class="text-center">
+                            <i class="bi bi-robot display-6 text-muted"></i>
+                            <p class="text-muted small mt-2">No LLM providers configured</p>
+                            <a href="/llm-providers" class="btn btn-sm btn-primary">
+                                <i class="bi bi-gear"></i> Configure Providers
+                            </a>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-center">
+                            <i class="bi bi-robot display-6 text-success"></i>
+                            <p class="mt-2 mb-1">
+                                <strong>@activeLlmCount</strong> active provider@(activeLlmCount == 1 ? "" : "s")
+                                @if (totalLlmCount > activeLlmCount)
+                                {
+                                    <span class="text-muted">
+                                        (of @totalLlmCount total)
+                                    </span>
+                                }
+                            </p>
+                            <a href="/llm-providers" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-gear"></i> Manage
+                            </a>
+                        </div>
+                    }
+                </div>
+            </div>
         </div>
     </div>
 </div>
@@ -212,11 +280,16 @@
 @code {
     private List<Conversation>? conversations;
     private int? dataSourceCount;
+    private int? activeLlmCount;
+    private int? totalLlmCount;
     private bool showAllConversations = false;
     private bool isLoading = true;
     private bool isLoadingDataSources = true;
+    private bool isLoadingLlmServices = true;
     private bool isCreatingConversation = false;
     private string errorMessage = "";
+    
+    private bool canCreateConversation => (dataSourceCount ?? 0) > 0 && (activeLlmCount ?? 0) > 0;
 
     protected override async Task OnInitializedAsync()
     {
@@ -225,7 +298,7 @@
 
     private async Task LoadData()
     {
-        await Task.WhenAll(LoadConversations(), LoadDataSourceCount());
+        await Task.WhenAll(LoadConversations(), LoadDataSourceCount(), LoadLlmServiceCount());
     }
 
     private async Task ReloadData()
@@ -233,6 +306,7 @@
         errorMessage = "";
         isLoading = true;
         isLoadingDataSources = true;
+        isLoadingLlmServices = true;
         StateHasChanged();
         await LoadData();
     }
@@ -275,9 +349,30 @@
         }
     }
 
+    private async Task LoadLlmServiceCount()
+    {
+        try
+        {
+            isLoadingLlmServices = true;
+            var llmServices = await ApiService.GetAvailableLlmServicesAsync();
+            totalLlmCount = llmServices?.Count ?? 0;
+            activeLlmCount = llmServices?.Count(s => s.IsAvailable) ?? 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading LLM services: {ex}");
+            totalLlmCount = 0;
+            activeLlmCount = 0;
+        }
+        finally
+        {
+            isLoadingLlmServices = false;
+        }
+    }
+
     private async Task CreateNewConversation()
     {
-        if (isCreatingConversation) return;
+        if (isCreatingConversation || !canCreateConversation) return;
 
         try
         {

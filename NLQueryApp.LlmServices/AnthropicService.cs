@@ -11,14 +11,20 @@ public class AnthropicService : BaseLlmService
     public AnthropicService(HttpClient httpClient, IConfiguration configuration, ILogger<AnthropicService> logger)
         : base(httpClient, configuration, logger)
     {
-        _apiKey = _configuration["LlmSettings:Anthropic:ApiKey"] 
-            ?? throw new ArgumentNullException("Anthropic API key is not configured");
+        // Don't throw exception - just use empty string as default like other services
+        _apiKey = _configuration["LlmSettings:Anthropic:ApiKey"] ?? "";
         
         _model = _configuration["LlmSettings:Anthropic:Model"] ?? "claude-3-7-sonnet-20250219";
         
         _httpClient.BaseAddress = new Uri("https://api.anthropic.com/v1/");
-        _httpClient.DefaultRequestHeaders.Add("x-api-key", _apiKey);
-        _httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        
+        // Only add headers if we have an API key
+        if (!string.IsNullOrEmpty(_apiKey))
+        {
+            _httpClient.DefaultRequestHeaders.Add("x-api-key", _apiKey);
+            _httpClient.DefaultRequestHeaders.Add("anthropic-version", "2023-06-01");
+        }
+        
         _httpClient.Timeout = TimeSpan.FromMinutes(_configuration.GetValue<int>("LlmSettings:Anthropic:TimeoutMinutes", 3));
     }
 
@@ -64,4 +70,6 @@ public class AnthropicService : BaseLlmService
     }
 
     protected override string GetServiceName() => "anthropic";
+    
+    public override bool HasApiKey() => !string.IsNullOrEmpty(_apiKey);
 }

@@ -42,15 +42,35 @@
                 </div>
 
                 <div class="dropdown">
-                    <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                        LLM: @selectedLlmService
+                    <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" disabled="@(!availableLlmServices.Any())">
+                        LLM: @(selectedLlmDisplayName ?? "Loading...")
                     </button>
                     <ul class="dropdown-menu">
+                        @if (availableLlmServices.Any())
+                        {
+                            @foreach (var service in availableLlmServices)
+                            {
+                                <li>
+                                    <a class="dropdown-item @(selectedLlmService == service.Name ? "active" : "")" 
+                                       @onclick="() => SelectLlmService(service)">
+                                        @service.DisplayName
+                                    </a>
+                                </li>
+                            }
+                        }
+                        else
+                        {
+                            <li>
+                                <span class="dropdown-item-text text-muted">No LLM services configured</span>
+                            </li>
+                        }
                         <li>
-                            <a class="dropdown-item @(selectedLlmService == "anthropic" ? "active" : "")" @onclick='() => selectedLlmService = "anthropic"'>Anthropic Claude</a>
+                            <hr class="dropdown-divider">
                         </li>
                         <li>
-                            <a class="dropdown-item @(selectedLlmService == "ollama" ? "active" : "")" @onclick='() => selectedLlmService = "ollama"'>Ollama</a>
+                            <a class="dropdown-item" @onclick='() => NavigationManager.NavigateTo("/llm-providers")'>
+                                <i class="bi bi-gear"></i> Manage LLM Providers
+                            </a>
                         </li>
                     </ul>
                 </div>
@@ -76,6 +96,12 @@
                     {
                         <p>
                             <strong>Please select a data source first.</strong>
+                        </p>
+                    }
+                    @if (!availableLlmServices.Any())
+                    {
+                        <p>
+                            <strong>No LLM services are configured. <a href="/llm-providers">Configure an LLM provider</a> to start querying.</strong>
                         </p>
                     }
                 </div>
@@ -156,10 +182,10 @@
             <div class="input-group">
                 <input type="text" class="form-control" placeholder="Ask a question about your data..."
                        @bind="userInput" @bind:event="oninput" @onkeydown="HandleKeyDown"
-                       disabled="@(isProcessing || selectedDataSource == null)"
+                       disabled="@(isProcessing || selectedDataSource == null || !availableLlmServices.Any())"
                        id="chat-input"/>
                 <button class="btn btn-primary" @onclick="SendMessage"
-                        disabled="@(isProcessing || selectedDataSource == null || string.IsNullOrWhiteSpace(userInput))">
+                        disabled="@(isProcessing || selectedDataSource == null || !availableLlmServices.Any() || string.IsNullOrWhiteSpace(userInput))">
                     @if (isProcessing)
                     {
                         <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
@@ -174,6 +200,12 @@
             {
                 <div class="text-danger mt-2">
                     <small>Please select a data source to start asking questions.</small>
+                </div>
+            }
+            @if (!availableLlmServices.Any())
+            {
+                <div class="text-danger mt-2">
+                    <small>No LLM services are available. <a href="/llm-providers">Configure an LLM provider</a> to start querying.</small>
                 </div>
             }
             @if (!string.IsNullOrEmpty(errorMessage))
@@ -197,11 +229,13 @@
     private string userInput = "";
     private bool isProcessing = false;
     private bool isLoading = true;
-    private string selectedLlmService = "ollama";
+    private string selectedLlmService = "";
+    private string? selectedLlmDisplayName;
     private string errorMessage = "";
 
     private List<DataSourceDefinition>? dataSources;
     private DataSourceDefinition? selectedDataSource;
+    private List<(string Name, string DisplayName, bool IsAvailable)> availableLlmServices = new();
 
     // Message history navigation
     private List<string> userMessageHistory = new();
@@ -236,16 +270,52 @@
             {
                 selectedDataSource = dataSources.First();
             }
+
+            // Load available LLM services
+            await LoadLlmServices();
         }
         catch (Exception ex)
         {
             errorMessage = $"Failed to load conversation: {ex.Message}";
             Console.WriteLine($"Error loading conversation: {ex}");
-            // Don't navigate away immediately, let user see the error
         }
         finally
         {
             isLoading = false;
+        }
+    }
+
+    private async Task LoadLlmServices()
+    {
+        try
+        {
+            var allServices = await ApiService.GetAvailableLlmServicesAsync();
+            
+            // Filter to only show services that are available (have API keys)
+            availableLlmServices = allServices
+                .Where(s => s.IsAvailable)
+                .ToList();
+
+            // Set default LLM service if available
+            if (availableLlmServices.Any())
+            {
+                var defaultService = availableLlmServices.FirstOrDefault(s => s.Name == "ollama");
+                selectedLlmService = defaultService.Name;
+                selectedLlmDisplayName = defaultService.DisplayName;
+            }
+            else
+            {
+                selectedLlmService = "";
+                selectedLlmDisplayName = "No services available";
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading LLM services: {ex.Message}");
+            // Fallback to ollama if API call fails
+            availableLlmServices = new List<(string, string, bool)> { ("ollama", "Ollama (Local)", true) };
+            selectedLlmService = "ollama";
+            selectedLlmDisplayName = "Ollama (Local)";
         }
     }
 
@@ -270,11 +340,18 @@
         errorMessage = ""; // Clear any previous errors
     }
 
+    private void SelectLlmService((string Name, string DisplayName, bool IsAvailable) service)
+    {
+        selectedLlmService = service.Name;
+        selectedLlmDisplayName = service.DisplayName;
+        errorMessage = ""; // Clear any previous errors
+    }
+
     private async Task HandleKeyDown(KeyboardEventArgs e)
     {
         try
         {
-            if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(userInput) && selectedDataSource != null && !isProcessing)
+            if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(userInput) && selectedDataSource != null && !isProcessing && availableLlmServices.Any())
             {
                 await SendMessage();
             }
@@ -352,7 +429,7 @@
 
     private async Task SendMessage()
     {
-        if (string.IsNullOrWhiteSpace(userInput) || selectedDataSource == null || isProcessing)
+        if (string.IsNullOrWhiteSpace(userInput) || selectedDataSource == null || isProcessing || !availableLlmServices.Any())
             return;
 
         isProcessing = true;

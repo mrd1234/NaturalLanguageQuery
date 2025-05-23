@@ -1,4 +1,5 @@
 ﻿using System.Net.Http.Json;
+using System.Text.Json;
 using NLQueryApp.Core;
 
 namespace NLQueryApp.Web.Services;
@@ -421,42 +422,73 @@ public class ApiService
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(question))
-            {
-                throw new ArgumentException("Question cannot be empty");
-            }
-            
-            if (string.IsNullOrWhiteSpace(dataSourceId))
-            {
-                throw new ArgumentException("Data source ID cannot be empty");
-            }
-            
-            var query = new { 
-                Question = question.Trim(), 
-                DataSourceId = dataSourceId.Trim(), 
-                LlmService = llmService?.Trim() 
-            };
-            
+            var query = new { Question = question, DataSourceId = dataSourceId, LlmService = llmService };
             var response = await _httpClient.PostAsJsonAsync("api/query", query);
             response.EnsureSuccessStatusCode();
             
-            var result = await response.Content.ReadFromJsonAsync<QueryResult>();
-            return result ?? throw new Exception("Server returned null when processing query");
+            return await response.Content.ReadFromJsonAsync<QueryResult>() 
+                   ?? throw new Exception("Failed to process query");
         }
         catch (HttpRequestException ex)
         {
             Console.WriteLine($"HTTP request failed: {ex.Message}");
-            throw new Exception($"Failed to process query: {ex.Message}", ex);
+            throw new Exception($"Failed to process query: {ex.Message}");
         }
-        catch (TaskCanceledException ex)
+    }
+    
+    // LLM Service methods - FIXED parsing
+    public async Task<List<(string Name, string DisplayName, bool IsAvailable)>> GetAvailableLlmServicesAsync()
+    {
+        try
         {
-            Console.WriteLine($"Request timed out: {ex.Message}");
-            throw new Exception("Query processing timed out. Please try again or try a simpler query.", ex);
+            Console.WriteLine("Fetching LLM services from API...");
+            
+            var response = await _httpClient.GetAsync("api/llm/services");
+            response.EnsureSuccessStatusCode();
+            
+            var jsonString = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"Raw API response: {jsonString}");
+            
+            // Parse the response properly using System.Text.Json
+            using var document = JsonDocument.Parse(jsonString);
+            var services = new List<(string Name, string DisplayName, bool IsAvailable)>();
+            
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                string name = "";
+                string displayName = "";
+                bool isAvailable = false;
+                
+                if (element.TryGetProperty("name", out var nameProp))
+                    name = nameProp.GetString() ?? "";
+                
+                if (element.TryGetProperty("displayName", out var displayNameProp))
+                    displayName = displayNameProp.GetString() ?? "";
+                    
+                if (element.TryGetProperty("isAvailable", out var isAvailableProp))
+                    isAvailable = isAvailableProp.GetBoolean();
+                
+                Console.WriteLine($"Parsed service: {name} - {displayName} - Available: {isAvailable}");
+                
+                services.Add((name, displayName, isAvailable));
+            }
+            
+            Console.WriteLine($"Total parsed services: {services.Count}");
+            return services;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error processing query: {ex.Message}");
-            throw;
+            Console.WriteLine($"Error getting LLM services: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            
+            // Return default services if API call fails
+            return new List<(string Name, string DisplayName, bool IsAvailable)>
+            {
+                ("ollama", "Ollama (Local)", true),
+                ("anthropic", "Anthropic Claude", false),
+                ("openai", "OpenAI GPT-4", false),
+                ("gemini", "Google Gemini", false)
+            };
         }
     }
 }

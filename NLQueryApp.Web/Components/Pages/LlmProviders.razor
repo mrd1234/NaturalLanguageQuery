@@ -1,0 +1,275 @@
+﻿@page "/llm-providers"
+@using NLQueryApp.Web.Services
+@using System.Text.Json
+@inject ApiService ApiService
+@inject NavigationManager NavigationManager
+@inject HttpClient HttpClient
+
+<div class="container">
+    <h1>LLM Provider Configuration</h1>
+    <span class="focus-target" tabindex="-1"></span>
+    
+    <div class="row mb-4">
+        <div class="col">
+            <p class="text-muted">
+                Configure your Large Language Model providers. Only providers with valid API keys will be available for use in conversations.
+            </p>
+        </div>
+    </div>
+    
+    @if (!string.IsNullOrEmpty(debugInfo))
+    {
+        <div class="alert alert-info">
+            <h5>Debug Information</h5>
+            <pre>@debugInfo</pre>
+        </div>
+    }
+    
+    <div class="row">
+        <div class="col">
+            @if (llmServices == null)
+            {
+                <div class="d-flex justify-content-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Provider</th>
+                                <th>Status</th>
+                                <th>Configuration</th>
+                                <th>Notes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var service in llmServices)
+                            {
+                                <tr>
+                                    <td>
+                                        <strong>@service.DisplayName</strong>
+                                        <br />
+                                        <small class="text-muted">@service.Name</small>
+                                    </td>
+                                    <td>
+                                        @if (service.IsAvailable)
+                                        {
+                                            <span class="badge bg-success">
+                                                <i class="bi bi-check-circle"></i> Active
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge bg-secondary">
+                                                <i class="bi bi-x-circle"></i> Not Configured
+                                            </span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @switch (service.Name)
+                                        {
+                                            case "ollama":
+                                                <div class="small">
+                                                    <strong>Base URL:</strong> @GetOllamaBaseUrl()<br />
+                                                    <strong>Model:</strong> @GetOllamaModel()<br />
+                                                    <span class="text-success"><i class="bi bi-info-circle"></i> No API key required</span>
+                                                </div>
+                                                break;
+                                            case "anthropic":
+                                                <div class="small">
+                                                    <strong>Model:</strong> @GetAnthropicModel()<br />
+                                                    <strong>API Key: </strong> 
+                                                    @if (service.IsAvailable)
+                                                    {
+                                                        <span class="text-success">Configured</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="text-danger">Not set</span>
+                                                    }
+                                                </div>
+                                                break;
+                                            case "openai":
+                                                <div class="small">
+                                                    <strong>Model:</strong> @GetOpenAIModel()<br />
+                                                    <strong>API Key: </strong> 
+                                                    @if (service.IsAvailable)
+                                                    {
+                                                        <span class="text-success">Configured</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="text-danger">Not set</span>
+                                                    }
+                                                </div>
+                                                break;
+                                            case "gemini":
+                                                <div class="small">
+                                                    <strong>Model:</strong> @GetGeminiModel()<br />
+                                                    <strong>API Key: </strong> 
+                                                    @if (service.IsAvailable)
+                                                    {
+                                                        <span class="text-success">Configured</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="text-danger">Not set</span>
+                                                    }
+                                                </div>
+                                                break;
+                                        }
+                                    </td>
+                                    <td>
+                                        @switch (service.Name)
+                                        {
+                                            case "ollama":
+                                                <small>Local LLM server. Ensure Ollama is running on the specified URL.</small>
+                                                break;
+                                            case "anthropic":
+                                                <small>Set the API key in appsettings.json under LlmSettings:Anthropic:ApiKey</small>
+                                                break;
+                                            case "openai":
+                                                <small>Set the API key in appsettings.json under LlmSettings:OpenAI:ApiKey</small>
+                                                break;
+                                            case "gemini":
+                                                <small>Set the API key in appsettings.json under LlmSettings:Gemini:ApiKey</small>
+                                                break;
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                
+                <div class="alert alert-info mt-4">
+                    <h5><i class="bi bi-info-circle"></i> Configuration Instructions</h5>
+                    <p>To configure LLM providers, update the <code>appsettings.json</code> file in the API project:</p>
+                    <pre><code>{
+  "LlmSettings": {
+    "Anthropic": {
+      "ApiKey": "your-anthropic-api-key",
+      "Model": "claude-3-7-sonnet-20250219"
+    },
+    "Ollama": {
+      "BaseUrl": "http://localhost:11434",
+      "Model": "qwen2.5-coder:14b-instruct-q4_k_m"
+    },
+    "OpenAI": {
+      "ApiKey": "your-openai-api-key",
+      "Model": "gpt-4-turbo-preview"
+    },
+    "Gemini": {
+      "ApiKey": "your-gemini-api-key",
+      "Model": "gemini-pro"
+    }
+  }
+}</code></pre>
+                    <p class="mb-0">After updating the configuration, restart the API server for changes to take effect.</p>
+                </div>
+            }
+        </div>
+    </div>
+    
+    <div class="row mt-4">
+        <div class="col">
+            <button class="btn btn-secondary" @onclick="NavigateBack">
+                <i class="bi bi-arrow-left"></i> Back
+            </button>
+            <button class="btn btn-primary ms-2" @onclick="RefreshStatus">
+                <i class="bi bi-arrow-clockwise"></i> Refresh Status
+            </button>
+            <button class="btn btn-info ms-2" @onclick="CheckConfiguration">
+                <i class="bi bi-bug"></i> Check Configuration
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<(string Name, string DisplayName, bool IsAvailable)>? llmServices;
+    private string debugInfo = "";
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadLlmServices();
+    }
+    
+    private async Task LoadLlmServices()
+    {
+        try
+        {
+            llmServices = await ApiService.GetAvailableLlmServicesAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading LLM services: {ex.Message}");
+            debugInfo = $"Error: {ex.Message}";
+            
+            // Show default services if API call fails
+            llmServices = new List<(string Name, string DisplayName, bool IsAvailable)>
+            {
+                ("ollama", "Ollama (Local)", false),
+                ("anthropic", "Anthropic Claude", false),
+                ("openai", "OpenAI GPT-4", false),
+                ("gemini", "Google Gemini", false)
+            };
+        }
+    }
+    
+    private async Task CheckConfiguration()
+    {
+        try
+        {
+            debugInfo = "Checking configuration...\n";
+            StateHasChanged();
+            
+            // Make direct HTTP call to avoid dynamic type issues
+            var response = await HttpClient.GetAsync("api/llm/config");
+            if (response.IsSuccessStatusCode)
+            {
+                var jsonString = await response.Content.ReadAsStringAsync();
+                
+                // Pretty print the JSON
+                using var document = JsonDocument.Parse(jsonString);
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                var formattedJson = JsonSerializer.Serialize(document.RootElement, options);
+                
+                debugInfo = $"Configuration from API:\n{formattedJson}";
+            }
+            else
+            {
+                debugInfo = $"Failed to retrieve configuration from API. Status: {response.StatusCode}";
+            }
+        }
+        catch (Exception ex)
+        {
+            debugInfo = $"Error checking configuration: {ex.Message}\n{ex.StackTrace}";
+        }
+    }
+    
+    private async Task RefreshStatus()
+    {
+        debugInfo = "";
+        llmServices = null;
+        StateHasChanged();
+        await LoadLlmServices();
+    }
+    
+    private void NavigateBack()
+    {
+        NavigationManager.NavigateTo("/");
+    }
+    
+    // Helper methods to show configuration (these would ideally come from configuration)
+    private string GetOllamaBaseUrl() => "http://localhost:11434";
+    private string GetOllamaModel() => "qwen2.5-coder:14b-instruct-q4_k_m";
+    private string GetAnthropicModel() => "claude-3-7-sonnet-20250219";
+    private string GetOpenAIModel() => "gpt-4-turbo-preview";
+    private string GetGeminiModel() => "gemini-pro";
+}

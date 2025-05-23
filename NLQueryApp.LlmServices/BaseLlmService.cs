@@ -52,6 +52,7 @@ public abstract class BaseLlmService : ILlmService
     protected abstract HttpRequestMessage CreateHttpRequest(string systemPrompt, string userPrompt);
     protected abstract Task<string> ExtractContentFromResponse(HttpResponseMessage response);
     protected abstract string GetServiceName();
+    public abstract bool HasApiKey();
 
     // Shared implementation
     protected string CreateUserPrompt(LlmQueryRequest request)
