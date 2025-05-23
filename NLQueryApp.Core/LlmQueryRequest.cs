@@ -9,4 +9,5 @@ public class LlmQueryRequest
     public string DataSourceType { get; set; } = "postgres";
     public string? PreviousSqlQuery { get; set; }
     public string? PreviousError { get; set; }
+    public ModelType ModelType { get; set; } = ModelType.Query;
 }

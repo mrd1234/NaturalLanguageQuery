@@ -15,6 +15,7 @@ public interface IDatabaseService
     Task<Conversation> GetConversationAsync(int id);
     Task<Conversation> CreateConversationAsync(string title);
     Task<ChatMessage> AddMessageAsync(int conversationId, ChatMessage message);
+    Task<bool> UpdateConversationTitleAsync(int conversationId, string title);
     
     // Schema management (for flexibility)
     Task<List<string>> GetAvailableSchemasAsync();

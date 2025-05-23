@@ -53,7 +53,11 @@ public class LlmServiceFactory
                 var service = GetService(name);
                 var isAvailable = service.HasApiKey();
                 
-                _logger.LogInformation("Service {ServiceName} availability: {IsAvailable}", name, isAvailable);
+                // Additional check for utility model availability
+                var hasUtilityModel = service.HasModel(ModelType.Utility);
+                
+                _logger.LogInformation("Service {ServiceName} - API Key: {HasApiKey}, Utility Model: {HasUtilityModel}", 
+                    name, isAvailable, hasUtilityModel);
                 
                 services.Add((name, displayName, isAvailable));
             }
@@ -68,5 +72,36 @@ public class LlmServiceFactory
             services.Count, services.Count(s => s.IsAvailable));
         
         return services;
+    }
+    
+    public Dictionary<string, object> GetServiceDetails(string serviceName)
+    {
+        try
+        {
+            var service = GetService(serviceName);
+            var details = new Dictionary<string, object>
+            {
+                ["name"] = serviceName,
+                ["hasApiKey"] = service.HasApiKey(),
+                ["models"] = new Dictionary<string, bool>
+                {
+                    ["Query"] = service.HasModel(ModelType.Query),
+                    ["Utility"] = service.HasModel(ModelType.Utility),
+                    ["Summary"] = service.HasModel(ModelType.Summary)
+                }
+            };
+            
+            return details;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting details for service {ServiceName}", serviceName);
+            return new Dictionary<string, object>
+            {
+                ["name"] = serviceName,
+                ["hasApiKey"] = false,
+                ["error"] = ex.Message
+            };
+        }
     }
 }

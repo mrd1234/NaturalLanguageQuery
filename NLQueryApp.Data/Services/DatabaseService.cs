@@ -799,4 +799,31 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         
         return tables;
     }
+    
+    public async Task<bool> UpdateConversationTitleAsync(int conversationId, string title)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            await using var command = new NpgsqlCommand(
+                @"UPDATE app.conversations 
+                  SET title = @title, updated_at = @updatedAt 
+                  WHERE id = @id",
+                connection);
+            
+            command.Parameters.AddWithValue("@title", title);
+            command.Parameters.AddWithValue("@updatedAt", DateTime.UtcNow);
+            command.Parameters.AddWithValue("@id", conversationId);
+
+            var rowsAffected = await command.ExecuteNonQueryAsync();
+            return rowsAffected > 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error updating conversation title: {ex.Message}");
+            return false;
+        }
+    }
 }

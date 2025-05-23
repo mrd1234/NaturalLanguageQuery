@@ -2,19 +2,17 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using NLQueryApp.Core;
 
 public class AnthropicService : BaseLlmService
 {
     private readonly string _apiKey;
-    private readonly string _model;
+    private readonly Dictionary<ModelType, string> _models;
 
     public AnthropicService(HttpClient httpClient, IConfiguration configuration, ILogger<AnthropicService> logger)
         : base(httpClient, configuration, logger)
     {
-        // Don't throw exception - just use empty string as default like other services
         _apiKey = _configuration["LlmSettings:Anthropic:ApiKey"] ?? "";
-        
-        _model = _configuration["LlmSettings:Anthropic:Model"] ?? "claude-3-7-sonnet-20250219";
         
         _httpClient.BaseAddress = new Uri("https://api.anthropic.com/v1/");
         
@@ -26,11 +24,51 @@ public class AnthropicService : BaseLlmService
         }
         
         _httpClient.Timeout = TimeSpan.FromMinutes(_configuration.GetValue<int>("LlmSettings:Anthropic:TimeoutMinutes", 3));
+
+        // Load model configuration
+        _models = LoadModelConfiguration();
     }
 
-    protected override HttpRequestMessage CreateHttpRequest(string systemPrompt, string userPrompt)
+    private Dictionary<ModelType, string> LoadModelConfiguration()
     {
-        var enhancedPrompt = $@"{systemPrompt}
+        var models = new Dictionary<ModelType, string>();
+        
+        // Check if new model hierarchy is configured
+        var queryModel = _configuration["LlmSettings:Anthropic:Models:Query"];
+        var utilityModel = _configuration["LlmSettings:Anthropic:Models:Utility"];
+        var summaryModel = _configuration["LlmSettings:Anthropic:Models:Summary"];
+        
+        if (!string.IsNullOrEmpty(queryModel))
+        {
+            // New hierarchy format
+            models[ModelType.Query] = queryModel;
+            
+            if (!string.IsNullOrEmpty(utilityModel))
+                models[ModelType.Utility] = utilityModel;
+            else
+                models[ModelType.Utility] = "claude-3-haiku-20240307"; // Default fast model
+                
+            if (!string.IsNullOrEmpty(summaryModel))
+                models[ModelType.Summary] = summaryModel;
+            else
+                models[ModelType.Summary] = utilityModel ?? "claude-3-haiku-20240307";
+        }
+        else
+        {
+            // Legacy format - single model, with intelligent defaults
+            var legacyModel = _configuration["LlmSettings:Anthropic:Model"] ?? "claude-3-7-sonnet-20250219";
+            models[ModelType.Query] = legacyModel;
+            models[ModelType.Utility] = "claude-3-haiku-20240307"; // Always use fast model for utilities
+            models[ModelType.Summary] = "claude-3-haiku-20240307";
+        }
+        
+        return models;
+    }
+
+    protected override HttpRequestMessage CreateHttpRequest(string systemPrompt, string userPrompt, ModelType modelType)
+    {
+        var model = GetModelForType(modelType);
+        var enhancedPrompt = string.IsNullOrEmpty(systemPrompt) ? userPrompt : $@"{systemPrompt}
 
 {userPrompt}";
 
@@ -41,10 +79,10 @@ public class AnthropicService : BaseLlmService
 
         var requestData = new
         {
-            model = _model,
+            model,
             messages,
-            max_tokens = 4000,
-            temperature = 0.0
+            max_tokens = modelType == ModelType.Query ? 4000 : 1000, // Smaller tokens for utility tasks
+            temperature = modelType == ModelType.Query ? 0.0 : 0.1
         };
 
         return new HttpRequestMessage(HttpMethod.Post, "messages")
@@ -70,6 +108,16 @@ public class AnthropicService : BaseLlmService
     }
 
     protected override string GetServiceName() => "anthropic";
+
+    protected override string GetModelForType(ModelType modelType)
+    {
+        return _models.TryGetValue(modelType, out var model) ? model : _models[ModelType.Query];
+    }
     
     public override bool HasApiKey() => !string.IsNullOrEmpty(_apiKey);
+
+    public override bool HasModel(ModelType modelType)
+    {
+        return HasApiKey() && _models.ContainsKey(modelType) && !string.IsNullOrEmpty(_models[modelType]);
+    }
 }
