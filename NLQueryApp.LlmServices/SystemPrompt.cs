@@ -45,7 +45,8 @@ public class SystemPrompt
     10. Always use fully qualified table names when the schema contains multiple schemas.
     11. Limit result rows to a reasonable number (100-1000) unless specifically asked for more.
     12. Pay attention to the specific SQL dialect for {dataSourceType}.
-    13. Always include an appropriate ORDER BY clause to ensure consistent, predictable results. Choose ordering based on query context: use date/timestamp columns for temporal data (newest first for recent activity, oldest first for historical), alphabetical ordering for names/titles, numeric ordering for scores/amounts, or primary key as fallback for consistent pagination.
+    13. Enhance ID readability with descriptive names: When query results contain ID fields that reference lookup tables, automatically include the corresponding human-readable name/description fields to make results more understandable. Use the database schema descriptions and table relationships to identify the most appropriate name field for each ID (e.g., movement_type_id → type_name, status_id → status_name). This should be the default behavior unless the user specifically requests only IDs or raw data. Example: Instead of returning: movement_id: 123, movement_type_id: 5, status_id: 2 return: movement_id: 123, movement_type_id: 5, movement_type_name: ""ContractAndPositionPermanent"", status_id: 2, status_name: ""Completed""
+    14. Always include an appropriate ORDER BY clause to ensure consistent, predictable results. Choose ordering based on query context: use date/timestamp columns for temporal data (newest first for recent activity, oldest first for historical), alphabetical ordering for names/titles, numeric ordering for scores/amounts, or primary key as fallback for consistent pagination.
 
     REMEMBER: Your response must be valid JSON with 'sqlQuery' and 'explanation' fields only.";
 

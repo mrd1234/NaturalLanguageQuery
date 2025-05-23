@@ -137,49 +137,70 @@
                             </button>
                         </div>
 
-                        @if (message.Role == "assistant" && queryResults.TryGetValue(message.Id, out var result) && result.Success && result.Data != null)
+                        @if (queryResults.TryGetValue(message.Id, out var result))
                         {
-                            <div class="card mb-3 bg-white">
-                                <div class="card-body">
-                                    <h5 class="card-title">Query Results</h5>
-                                    <div class="table-responsive">
-                                        @if (result.Data.Any())
-                                        {
-                                            <table class="table table-sm table-hover">
-                                                <thead>
-                                                <tr>
-                                                    @foreach (var column in result.Data.First().Keys)
-                                                    {
-                                                        <th>@column</th>
-                                                    }
-                                                </tr>
-                                                </thead>
-                                                <tbody>
-                                                @foreach (var row in result.Data)
-                                                {
+                            @if (result.Success && result.Data != null)
+                            {
+                                <div class="card mb-3 bg-white">
+                                    <div class="card-body">
+                                        <h5 class="card-title">Query Results</h5>
+                                        <div class="table-responsive">
+                                            @if (result.Data.Any())
+                                            {
+                                                <table class="table table-sm table-hover">
+                                                    <thead>
                                                     <tr>
-                                                        @foreach (var value in row.Values)
+                                                        @foreach (var column in result.Data.First().Keys)
                                                         {
-                                                            <td>@(value?.ToString() ?? "NULL")</td>
+                                                            <th>@column</th>
                                                         }
                                                     </tr>
-                                                }
-                                                </tbody>
-                                            </table>
-                                        }
-                                        else
-                                        {
-                                            <p>No results found.</p>
-                                        }
-                                    </div>
-                                    <div class="small text-muted mt-2">
-                                        <p>
-                                            <strong>SQL Query:</strong>
-                                        </p>
-                                        <pre><code>@result.SqlQuery</code></pre>
+                                                    </thead>
+                                                    <tbody>
+                                                    @foreach (var row in result.Data)
+                                                    {
+                                                        <tr>
+                                                            @foreach (var value in row.Values)
+                                                            {
+                                                                <td>@(value?.ToString() ?? "NULL")</td>
+                                                            }
+                                                        </tr>
+                                                    }
+                                                    </tbody>
+                                                </table>
+                                            }
+                                            else
+                                            {
+                                                <p>No results found.</p>
+                                            }
+                                        </div>
+                                        <div class="small text-muted mt-2">
+                                            <p>
+                                                <strong>SQL Query:</strong>
+                                            </p>
+                                            <pre><code>@result.SqlQuery</code></pre>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
+                            }
+                            else if (!result.Success)
+                            {
+                                <div class="card mb-3 bg-light border-danger">
+                                    <div class="card-body">
+                                        <h5 class="card-title text-danger">Query Error</h5>
+                                        <p class="text-danger">@result.ErrorMessage</p>
+                                        @if (!string.IsNullOrEmpty(result.SqlQuery))
+                                        {
+                                            <div class="small text-muted mt-2">
+                                                <p>
+                                                    <strong>Generated SQL Query:</strong>
+                                                </p>
+                                                <pre><code>@result.SqlQuery</code></pre>
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                            }
                         }
                     </div>
                 }
@@ -641,30 +662,10 @@
             // Process the query
             var result = await ApiService.ProcessQueryAsync(queryText, selectedDataSource.Id, selectedLlmService);
 
-            // Create assistant response
-            string assistantContent;
-            if (result.Success)
-            {
-                assistantContent = "Here are the results for your query.";
-            }
-            else
-            {
-                assistantContent = $"I encountered an error: {result.ErrorMessage}: {result.SqlQuery}";
-            }
-
-            var assistantMessage = new ChatMessage
-            {
-                Role = "assistant",
-                Content = assistantContent,
-                ConversationId = ConversationId,
-                Timestamp = DateTime.UtcNow
-            };
-
-            var assistantResponse = await ApiService.AddMessageAsync(ConversationId, assistantMessage);
-            messages.Add(assistantResponse.Message);
-
-            // Store the query result
-            queryResults[assistantResponse.Message.Id] = result;
+            // For both success and error cases, store the result with the user message ID
+            // This displays results/errors under the user's question without adding assistant messages
+            var userMessageId = messages.Last().Id; // Get the user message we just added
+            queryResults[userMessageId] = result;
 
             // Update UI
             StateHasChanged();
