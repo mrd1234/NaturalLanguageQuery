@@ -1,10 +1,12 @@
 ﻿@page "/datasources"
 @using NLQueryApp.Web.Services
+@using NLQueryApp.Core.Models
 @inject ApiService ApiService
 @inject NavigationManager NavigationManager
 
 <div class="container">
     <h1>Data Sources</h1>
+    <span class="focus-target" tabindex="-1"></span>
     
     <div class="row mb-4">
         <div class="col">
@@ -101,9 +103,9 @@
 </div>
 
 @code {
-    private List<DataSourceDefinition> dataSources;
+    private List<DataSourceDefinition>? dataSources;
     private bool showDeleteConfirmation = false;
-    private DataSourceDefinition dataSourceToDelete;
+    private DataSourceDefinition? dataSourceToDelete;
     private bool isDeleting = false;
     
     protected override async Task OnInitializedAsync()

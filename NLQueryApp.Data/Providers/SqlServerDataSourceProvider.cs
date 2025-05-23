@@ -40,7 +40,7 @@ public class SqlServerDataSourceProvider : IDataSourceProvider
             var versionString = await command.ExecuteScalarAsync() as string ?? "";
         
             // Parse SQL Server version
-            var match = System.Text.RegularExpressions.Regex.Match(versionString, @"Microsoft SQL Server (\d+)");
+            var match = Regex.Match(versionString, @"Microsoft SQL Server (\d+)");
             var version = "Unknown";
             var parsedVersion = new Version(1, 0);
         

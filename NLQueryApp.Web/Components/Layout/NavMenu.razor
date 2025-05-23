@@ -1,23 +1,32 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
+﻿@* Horizontal Navigation Menu Component *@
+<nav class="navbar navbar-expand-lg navbar-dark bg-gradient">
     <div class="container-fluid">
-        <a class="navbar-brand" href="">NL Query App</a>
+        <a class="navbar-brand" href="">
+            <i class="bi bi-cpu"></i>
+            <span class="brand-text">Natural Language Query</span>
+        </a>
+        
+        <div class="navbar-nav ms-auto">
+            <NavLink class="nav-link nav-item-custom" href="" Match="NavLinkMatch.All">
+                <span class="nav-icon">
+                    <i class="bi bi-chat-dots-fill"></i>
+                </span>
+                <span class="nav-text">Conversations</span>
+            </NavLink>
+            
+            <NavLink class="nav-link nav-item-custom" href="datasources">
+                <span class="nav-icon">
+                    <i class="bi bi-database-fill"></i>
+                </span>
+                <span class="nav-text">Data Sources</span>
+            </NavLink>
+            
+            <NavLink class="nav-link nav-item-custom" href="about">
+                <span class="nav-icon">
+                    <i class="bi bi-info-circle-fill"></i>
+                </span>
+                <span class="nav-text">About</span>
+            </NavLink>
+        </div>
     </div>
-</div>
-
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
-
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-chat-dots" aria-hidden="true"></span> Conversations
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="datasources">
-                <span class="bi bi-database" aria-hidden="true"></span> Data Sources
-            </NavLink>
-        </div>
-    </nav>
-</div>
+</nav>

@@ -568,21 +568,40 @@ public class DatabaseService(IConfiguration configuration) : IDatabaseService
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync();
 
-        await using var command = new NpgsqlCommand(
-            "SELECT id, title, created_at, updated_at FROM app.conversations ORDER BY updated_at DESC", 
+        await using var command = new NpgsqlCommand(@"
+            SELECT 
+                c.id, 
+                c.title, 
+                c.created_at, 
+                c.updated_at,
+                COALESCE(COUNT(m.id), 0) as message_count
+            FROM app.conversations c
+            LEFT JOIN app.messages m ON c.id = m.conversation_id
+            GROUP BY c.id, c.title, c.created_at, c.updated_at
+            ORDER BY c.updated_at DESC", 
             connection);
 
         await using var reader = await command.ExecuteReaderAsync();
         
         while (await reader.ReadAsync())
         {
-            conversations.Add(new Conversation
+            var messageCount = reader.GetInt32(4);
+            var conversation = new Conversation
             {
                 Id = reader.GetInt32(0),
                 Title = reader.GetString(1),
                 CreatedAt = reader.GetDateTime(2),
-                UpdatedAt = reader.GetDateTime(3)
-            });
+                UpdatedAt = reader.GetDateTime(3),
+                Messages = new List<ChatMessage>()
+            };
+            
+            // Create placeholder messages for the count
+            for (int i = 0; i < messageCount; i++)
+            {
+                conversation.Messages.Add(new ChatMessage { ConversationId = conversation.Id });
+            }
+            
+            conversations.Add(conversation);
         }
         
         return conversations;

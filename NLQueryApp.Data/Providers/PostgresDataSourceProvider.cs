@@ -53,7 +53,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
             var versionString = await command.ExecuteScalarAsync() as string ?? "";
         
             // Parse version from string like "PostgreSQL 14.2 on x86_64-pc-linux-gnu..."
-            var match = System.Text.RegularExpressions.Regex.Match(versionString, @"PostgreSQL (\d+)\.(\d+)");
+            var match = Regex.Match(versionString, @"PostgreSQL (\d+)\.(\d+)");
             var version = "Unknown";
             var parsedVersion = new Version();
         

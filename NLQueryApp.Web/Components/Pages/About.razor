@@ -1,0 +1,102 @@
+﻿@page "/about"
+
+<div class="container">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="text-center mb-5">
+                <h1 class="display-4 mb-3">About Natural Language Query</h1>
+                <p class="lead text-muted">Transform your database queries with the power of natural language</p>
+                <span class="focus-target" tabindex="-1"></span>
+            </div>
+
+            <div class="card mb-4 shadow-sm">
+                <div class="card-body">
+                    <h3 class="card-title">
+                        <i class="bi bi-lightbulb text-warning"></i> What is Natural Language Query?
+                    </h3>
+                    <p class="card-text">
+                        Natural Language Query is an innovative tool that bridges the gap between natural language and SQL databases. 
+                        Simply ask questions in plain English, and our AI-powered system will generate and execute the 
+                        appropriate SQL queries to get your answers.
+                    </p>
+                </div>
+            </div>
+
+            <div class="card mb-4 shadow-sm">
+                <div class="card-body">
+                    <h3 class="card-title">
+                        <i class="bi bi-gear text-primary"></i> How It Works
+                    </h3>
+                    <ol class="card-text">
+                        <li><strong>Connect Your Database</strong> - Set up secure connections to your PostgreSQL databases</li>
+                        <li><strong>Start a Conversation</strong> - Create a new chat session for your queries</li>
+                        <li><strong>Ask Natural Questions</strong> - Type questions like "Show me all sales from last month"</li>
+                        <li><strong>Get Instant Results</strong> - View your data along with the generated SQL query</li>
+                    </ol>
+                </div>
+            </div>
+
+            <div class="card mb-4 shadow-sm">
+                <div class="card-body">
+                    <h3 class="card-title">
+                        <i class="bi bi-shield-check text-success"></i> Features
+                    </h3>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <ul class="list-unstyled">
+                                <li><i class="bi bi-check-circle text-success"></i> Natural language processing</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Multiple LLM support</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Secure data source management</li>
+                            </ul>
+                        </div>
+                        <div class="col-md-6">
+                            <ul class="list-unstyled">
+                                <li><i class="bi bi-check-circle text-success"></i> Conversation history</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Schema context support</li>
+                                <li><i class="bi bi-check-circle text-success"></i> Real-time query execution</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-center mt-5">
+                <a href="/" class="btn btn-primary btn-lg">
+                    <i class="bi bi-chat-dots"></i> Start Querying
+                </a>
+                <a href="/datasources" class="btn btn-outline-primary btn-lg ms-2">
+                    <i class="bi bi-database"></i> Configure Data Sources
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .card {
+        transition: transform 0.3s ease;
+        border: none;
+    }
+    
+    .card:hover {
+        transform: translateY(-5px);
+    }
+    
+    .display-4 {
+        font-weight: 300;
+        color: #333;
+        user-select: none;
+    }
+    
+    .display-4:focus {
+        outline: none;
+    }
+    
+    .card-title i {
+        margin-right: 0.5rem;
+    }
+    
+    .list-unstyled li {
+        padding: 0.25rem 0;
+    }
+</style>

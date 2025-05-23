@@ -1,11 +1,13 @@
 ﻿@page "/datasource/edit/{Id}"
 @page "/datasource/new"
 @using NLQueryApp.Web.Services
+@using NLQueryApp.Core.Models
 @inject ApiService ApiService
 @inject NavigationManager NavigationManager
 
 <div class="container">
     <h1>@(isNew ? "Create New Data Source" : "Edit Data Source")</h1>
+    <span class="focus-target" tabindex="-1"></span>
     
     <div class="card">
         <div class="card-body">
