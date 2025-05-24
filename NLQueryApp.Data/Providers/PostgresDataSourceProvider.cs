@@ -437,6 +437,54 @@ LIMIT 20;",
         return descriptions;
     }
 
+    public override Task<TitleGenerationContext> GetTitleGenerationContextAsync(DataSourceDefinition dataSource)
+    {
+        var context = new TitleGenerationContext
+        {
+            Abbreviations = new Dictionary<string, string>
+            {
+                ["DB"] = "Database",
+                ["PG"] = "PostgreSQL",
+                ["FK"] = "Foreign Key",
+                ["PK"] = "Primary Key",
+                ["IX"] = "Index",
+                ["CTE"] = "Common Table Expression",
+                ["JSONB"] = "JSON Binary"
+            },
+            
+            KeyTerms = new List<string>
+            {
+                "table", "column", "index", "constraint", "schema", "query",
+                "join", "aggregate", "function", "trigger", "view", "sequence",
+                "primary key", "foreign key", "performance", "explain plan"
+            },
+            
+            MainEntities = new List<(string Entity, string Description)>
+            {
+                ("tables", "Database tables"),
+                ("indexes", "Performance indexes"),
+                ("constraints", "Data integrity rules"),
+                ("schemas", "Database namespaces"),
+                ("views", "Virtual tables")
+            },
+            
+            ExampleTitles = new List<string>
+            {
+                "Table Row Counts",
+                "Database Size Analysis",
+                "Index Usage Statistics",
+                "Query Performance Review",
+                "Schema Structure Overview",
+                "Foreign Key Relationships",
+                "Data Type Distribution"
+            },
+            
+            AdditionalContext = "Focus on database structure and performance aspects when generating titles."
+        };
+        
+        return Task.FromResult(context);
+    }
+
     public override Task<string> GetQueryLanguageAsync(DataSourceDefinition dataSource)
     {
         return Task.FromResult("PostgreSQL");

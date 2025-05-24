@@ -38,11 +38,14 @@ public abstract class BaseDataSourceProvider : IDataSourceProvider
         {
             if (llmService != null && llmService.HasModel(ModelType.Utility))
             {
+                // Get domain-specific context for better title generation
+                var titleContext = await GetTitleGenerationContextAsync(dataSource);
+                
                 // Get schema context for better title generation
                 var schemaContext = await GetSchemaContextForTitleGeneration(dataSource);
                 var entities = await GetEntityDescriptionsAsync(dataSource);
                 
-                var prompt = CreateTitleGenerationPrompt(userQuestion, schemaContext, entities);
+                var prompt = CreateTitleGenerationPrompt(userQuestion, schemaContext, entities, titleContext);
                 
                 try
                 {
@@ -83,6 +86,13 @@ public abstract class BaseDataSourceProvider : IDataSourceProvider
     {
         await Task.CompletedTask;
         return new Dictionary<string, string>();
+    }
+    
+    // Default implementation - returns empty context, can be overridden by specific providers
+    public virtual async Task<TitleGenerationContext> GetTitleGenerationContextAsync(DataSourceDefinition dataSource)
+    {
+        await Task.CompletedTask;
+        return new TitleGenerationContext();
     }
     
     // Default implementation - not all providers need schema setup
@@ -149,20 +159,69 @@ public abstract class BaseDataSourceProvider : IDataSourceProvider
         }
     }
     
-    protected virtual string CreateTitleGenerationPrompt(string userQuestion, string schemaContext, Dictionary<string, string> entities)
+    protected virtual string CreateTitleGenerationPrompt(string userQuestion, string schemaContext, Dictionary<string, string> entities, TitleGenerationContext titleContext)
     {
         var prompt = $@"You are creating a concise title for a database query.
 
 Database Context:
 {schemaContext}
 
-Generate a concise, descriptive title (4-8 words maximum) that captures what the user is asking about.
+";
+
+        // Add domain-specific context if available
+        if (titleContext.HasContent)
+        {
+            prompt += "Domain-Specific Context:\n";
+            
+            if (titleContext.Abbreviations.Any())
+            {
+                prompt += "Common Abbreviations:\n";
+                foreach (var abbr in titleContext.Abbreviations.Take(10))
+                {
+                    prompt += $"- {abbr.Key} = {abbr.Value}\n";
+                }
+                prompt += "\n";
+            }
+            
+            if (titleContext.KeyTerms.Any())
+            {
+                prompt += $"Key Terms: {string.Join(", ", titleContext.KeyTerms.Take(15))}\n\n";
+            }
+            
+            if (titleContext.MainEntities.Any())
+            {
+                prompt += "Main Entities:\n";
+                foreach (var entity in titleContext.MainEntities.Take(10))
+                {
+                    prompt += $"- {entity.Entity}: {entity.Description}\n";
+                }
+                prompt += "\n";
+            }
+            
+            if (titleContext.ExampleTitles.Any())
+            {
+                prompt += "Example Good Titles:\n";
+                foreach (var example in titleContext.ExampleTitles.Take(5))
+                {
+                    prompt += $"- {example}\n";
+                }
+                prompt += "\n";
+            }
+            
+            if (!string.IsNullOrWhiteSpace(titleContext.AdditionalContext))
+            {
+                prompt += $"Additional Context: {titleContext.AdditionalContext}\n\n";
+            }
+        }
+
+        prompt += @"Generate a concise, descriptive title (4-8 words maximum) that captures what the user is asking about.
 Focus on the key entities and action they're interested in.
+Use domain-specific terms and abbreviations when appropriate.
 Do not include quotes or extra formatting. Just return the title text.
 
 ";
 
-        if (entities.Any())
+        if (entities.Any() && !titleContext.MainEntities.Any()) // Don't duplicate if we already have entities from context
         {
             prompt += "Key entities in this database:\n";
             foreach (var entity in entities.Take(5))

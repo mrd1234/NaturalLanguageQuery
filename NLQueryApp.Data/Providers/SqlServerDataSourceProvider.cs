@@ -245,4 +245,53 @@ SQL Server (T-SQL) specific notes:
         await Task.CompletedTask;
         return "T-SQL (Transact-SQL)";
     }
+    
+    public Task<TitleGenerationContext> GetTitleGenerationContextAsync(DataSourceDefinition dataSource)
+    {
+        // Return basic SQL Server context
+        var context = new TitleGenerationContext
+        {
+            Abbreviations = new Dictionary<string, string>
+            {
+                ["DB"] = "Database",
+                ["SQL"] = "Structured Query Language",
+                ["T-SQL"] = "Transact-SQL",
+                ["FK"] = "Foreign Key",
+                ["PK"] = "Primary Key",
+                ["IX"] = "Index",
+                ["CTE"] = "Common Table Expression"
+            },
+            
+            KeyTerms = new List<string>
+            {
+                "table", "column", "index", "constraint", "schema", "query",
+                "join", "aggregate", "function", "trigger", "view", "stored procedure",
+                "primary key", "foreign key", "performance", "execution plan"
+            },
+            
+            MainEntities = new List<(string Entity, string Description)>
+            {
+                ("tables", "Database tables"),
+                ("indexes", "Performance indexes"),
+                ("constraints", "Data integrity rules"),
+                ("schemas", "Database namespaces"),
+                ("views", "Virtual tables"),
+                ("procedures", "Stored procedures")
+            },
+            
+            ExampleTitles = new List<string>
+            {
+                "Table Row Counts",
+                "Database Size Analysis",
+                "Index Usage Statistics",
+                "Query Performance Review",
+                "Schema Structure Overview",
+                "Foreign Key Relationships"
+            },
+            
+            AdditionalContext = "Focus on SQL Server specific features and T-SQL syntax when generating titles."
+        };
+        
+        return Task.FromResult(context);
+    }
 }

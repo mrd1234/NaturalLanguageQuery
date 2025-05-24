@@ -60,6 +60,59 @@ public class TeamMovementsDataSourceProvider : PostgresDataSourceProvider
         });
     }
 
+    public override Task<TitleGenerationContext> GetTitleGenerationContextAsync(DataSourceDefinition dataSource)
+    {
+        var context = new TitleGenerationContext
+        {
+            Abbreviations = new Dictionary<string, string>
+            {
+                ["HR"] = "Human Resources",
+                ["FT"] = "Full Time",
+                ["PT"] = "Part Time",
+                ["EA"] = "Enterprise Agreement",
+                ["STI"] = "Short Term Incentive",
+                ["CPP"] = "Culture People Partner",
+                ["STR"] = "Short Term Relief",
+                ["CC"] = "Cost Centre"
+            },
+            
+            KeyTerms = new List<string>
+            {
+                "movement", "transfer", "secondment", "promotion", "position", "role",
+                "manager", "approval", "workflow", "salary", "contract", "schedule",
+                "permanent", "temporary", "expired", "completed", "rejected",
+                "employee", "team member", "cost centre", "department", "banner"
+            },
+            
+            MainEntities = new List<(string Entity, string Description)>
+            {
+                ("movements", "Employee position changes"),
+                ("participants", "People in movement workflow"),
+                ("job_info", "Position and salary details"),
+                ("contracts", "Work schedules and agreements"),
+                ("history_events", "Workflow audit trail"),
+                ("cost_centres", "Store/office locations"),
+                ("managers", "Approvers and supervisors")
+            },
+            
+            ExampleTitles = new List<string>
+            {
+                "Active Team Movements",
+                "Movement Approval Patterns",
+                "Salary Change Analysis",
+                "Inter-Store Transfers",
+                "Manager Approval Activity",
+                "Movement Expiration Trends",
+                "Contract Schedule Review",
+                "Geographic Movement Flow"
+            },
+            
+            AdditionalContext = "Focus on business terminology like 'movements' rather than technical database terms. Include location names when relevant."
+        };
+        
+        return Task.FromResult(context);
+    }
+
     public override Task<List<QueryExample>> GetQueryExamplesAsync(DataSourceDefinition dataSource)
     {
         return Task.FromResult(new List<QueryExample>
@@ -196,93 +249,6 @@ LIMIT 50;",
             _logger.LogError(ex, "Failed to setup team movements schema");
             throw;
         }
-    }
-
-    public override async Task<string> GenerateTitleAsync(DataSourceDefinition dataSource, string userQuestion, ILlmService? llmService = null)
-    {
-        try
-        {
-            if (llmService != null && llmService.HasModel(ModelType.Utility))
-            {
-                var prompt = CreateTeamMovementsTitlePrompt(userQuestion);
-                
-                try
-                {
-                    var response = await llmService.GenerateUtilityResponseAsync(prompt, ModelType.Utility);
-                    
-                    if (!string.IsNullOrWhiteSpace(response) && response != "New Conversation")
-                    {
-                        var title = SanitizeTitle(response);
-                        _logger.LogInformation("Generated team movements specific title: {Title}", title);
-                        return title;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to generate title using LLM, using fallback");
-                }
-            }
-            
-            // Fallback with team movements context
-            return GenerateTeamMovementsFallbackTitle(userQuestion);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error generating title for team movements");
-            return GenerateFallbackTitle(userQuestion);
-        }
-    }
-
-    private string CreateTeamMovementsTitlePrompt(string userQuestion)
-    {
-        return $@"You are creating a concise title for a database query about team movements and employee data.
-
-Context: This is a team movements database containing information about:
-- Employee movements between positions/departments
-- Movement statuses (Completed, Expired, Rejected, etc.)
-- Movement types (permanent, temporary, secondments)
-- Participants, managers, job information
-- Contract details and scheduling
-- History events and workflow data
-- Cost centres with geographic locations
-
-Generate a concise, descriptive title (4-8 words maximum) that captures what the user is asking about.
-Focus on the key entities and action they're interested in.
-Do not include quotes or extra formatting. Just return the title text.
-
-Examples:
-- ""what movements are currently active?"" → ""Active Team Movements""
-- ""how many people moved last month?"" → ""Monthly Movement Count""
-- ""which managers approve the most movements?"" → ""Manager Approval Activity""
-- ""what day of the week do movements usually expire on?"" → ""Movement Expiration Days""
-- ""show salary changes for promotions"" → ""Promotion Salary Analysis""
-- ""movements between stores"" → ""Inter-Store Movement Patterns""
-
-User question: {userQuestion}";
-    }
-
-    private string GenerateTeamMovementsFallbackTitle(string userQuestion)
-    {
-        var cleaned = userQuestion.Trim().ToLower();
-        
-        // Team movements specific patterns
-        if (cleaned.Contains("movement") && cleaned.Contains("status"))
-            return "Movement Status Analysis";
-        if (cleaned.Contains("salary") || cleaned.Contains("pay"))
-            return "Salary Movement Analysis";
-        if (cleaned.Contains("manager") && cleaned.Contains("approv"))
-            return "Manager Approval Patterns";
-        if (cleaned.Contains("cost centre") || cleaned.Contains("store") || cleaned.Contains("location"))
-            return "Location Movement Analysis";
-        if (cleaned.Contains("expire") || cleaned.Contains("expir"))
-            return "Movement Expiration Analysis";
-        if (cleaned.Contains("contract") || cleaned.Contains("schedule"))
-            return "Contract Schedule Analysis";
-        if (cleaned.Contains("participant") || cleaned.Contains("role"))
-            return "Movement Participant Analysis";
-        
-        // Default to generic fallback
-        return GenerateFallbackTitle(userQuestion);
     }
 
     private async Task DropExistingSchema(NpgsqlConnection connection)

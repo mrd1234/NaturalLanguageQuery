@@ -80,6 +80,11 @@ public interface IDataSourceProvider
     /// Get the display name for the query language (for UI purposes)
     /// </summary>
     Task<string> GetQueryLanguageDisplayAsync(DataSourceDefinition dataSource);
+    
+    /// <summary>
+    /// Get domain-specific context for title generation
+    /// </summary>
+    Task<TitleGenerationContext> GetTitleGenerationContextAsync(DataSourceDefinition dataSource);
 }
 
 public class ValidationResult
