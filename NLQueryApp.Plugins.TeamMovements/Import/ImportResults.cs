@@ -1,4 +1,4 @@
-﻿namespace NLQueryApp.Api.Controllers.Import;
+namespace NLQueryApp.Plugins.TeamMovements.Import;
 
 public class ImportResults
 {

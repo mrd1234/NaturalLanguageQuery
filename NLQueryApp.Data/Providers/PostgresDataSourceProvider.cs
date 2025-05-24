@@ -1,4 +1,4 @@
-﻿using System.Data;
+using System.Data;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -8,21 +8,20 @@ using Npgsql;
 
 namespace NLQueryApp.Data.Providers;
 
-public class PostgresDataSourceProvider : IDataSourceProvider
+public class PostgresDataSourceProvider : BaseDataSourceProvider
 {
-    private readonly ILogger<PostgresDataSourceProvider> _logger;
     private static readonly Regex DangerousSqlPattern = new(
         @"\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|EXEC|EXECUTE)\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public PostgresDataSourceProvider(ILogger<PostgresDataSourceProvider> logger)
+        : base(logger)
     {
-        _logger = logger;
     }
 
-    public string ProviderType => "postgres";
+    public override string ProviderType => "postgres";
 
-    public async Task<string> GetSchemaAsync(DataSourceDefinition dataSource)
+    public override async Task<string> GetSchemaAsync(DataSourceDefinition dataSource)
     {
         var connectionString = dataSource.GetConnectionString();
         var schemaInfo = new StringBuilder();
@@ -41,7 +40,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         return schemaInfo.ToString();
     }
 
-    public async Task<DatabaseInfo?> GetDatabaseInfoAsync(DataSourceDefinition dataSource)
+    public override async Task<DatabaseInfo?> GetDatabaseInfoAsync(DataSourceDefinition dataSource)
     {
         try
         {
@@ -79,7 +78,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         }
     }
 
-    public async Task<string> GetDialectNotesAsync(DataSourceDefinition dataSource)
+    public override async Task<string> GetDialectNotesAsync(DataSourceDefinition dataSource)
     {
         try
         {
@@ -151,59 +150,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         }
     }
     
-    private async Task<PostgresFeatures> DetectPostgresFeatures(NpgsqlConnection connection, Version version)
-    {
-        var features = new PostgresFeatures();
-        
-        try
-        {
-            // Check for JSONB support (9.4+)
-            if (version >= new Version(9, 4))
-            {
-                await using var jsonbCmd = new NpgsqlCommand(
-                    "SELECT 1 FROM pg_type WHERE typname = 'jsonb'", connection);
-                var jsonbResult = await jsonbCmd.ExecuteScalarAsync();
-                features.HasJsonb = jsonbResult != null;
-            }
-            
-            // Check for basic JSON support (9.2+)
-            if (version >= new Version(9, 2))
-            {
-                await using var jsonCmd = new NpgsqlCommand(
-                    "SELECT 1 FROM pg_type WHERE typname = 'json'", connection);
-                var jsonResult = await jsonCmd.ExecuteScalarAsync();
-                features.HasJson = jsonResult != null;
-            }
-            
-            // Window functions (8.4+)
-            features.HasWindowFunctions = version >= new Version(8, 4);
-            
-            // CTE support (8.4+)
-            features.HasCte = version >= new Version(8, 4);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Error detecting PostgreSQL features, using version-based defaults");
-            
-            // Fallback to version-based detection
-            features.HasJsonb = version >= new Version(9, 4);
-            features.HasJson = version >= new Version(9, 2);
-            features.HasWindowFunctions = version >= new Version(8, 4);
-            features.HasCte = version >= new Version(8, 4);
-        }
-        
-        return features;
-    }
-    
-    private class PostgresFeatures
-    {
-        public bool HasJsonb { get; set; }
-        public bool HasJson { get; set; }
-        public bool HasWindowFunctions { get; set; }
-        public bool HasCte { get; set; }
-    }
-    
-    public async Task<QueryResult> ExecuteQueryAsync(DataSourceDefinition dataSource, string query)
+    public override async Task<QueryResult> ExecuteQueryAsync(DataSourceDefinition dataSource, string query)
     {
         var result = new QueryResult { SqlQuery = query };
         
@@ -280,7 +227,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         return result;
     }
 
-    public async Task<ValidationResult> ValidateQueryAsync(DataSourceDefinition dataSource, string query)
+    public override async Task<ValidationResult> ValidateQueryAsync(DataSourceDefinition dataSource, string query)
     {
         var result = new ValidationResult { IsValid = true };
         
@@ -312,7 +259,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         return result;
     }
 
-    public async Task<bool> TestConnectionAsync(DataSourceDefinition dataSource)
+    public override async Task<bool> TestConnectionAsync(DataSourceDefinition dataSource)
     {
         try
         {
@@ -331,7 +278,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         }
     }
 
-    public async Task<string?> GetQueryPlanAsync(DataSourceDefinition dataSource, string query)
+    public override async Task<string?> GetQueryPlanAsync(DataSourceDefinition dataSource, string query)
     {
         try
         {
@@ -351,7 +298,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         }
     }
 
-    public async Task<DataSourceMetadata> GetMetadataAsync(DataSourceDefinition dataSource)
+    public override async Task<DataSourceMetadata> GetMetadataAsync(DataSourceDefinition dataSource)
     {
         var metadata = new DataSourceMetadata
         {
@@ -394,124 +341,114 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         return metadata;
     }
 
-    private string[] GetIncludedSchemas(DataSourceDefinition dataSource)
+    // Explicitly override GenerateTitleAsync to ensure it's available
+    public override async Task<string> GenerateTitleAsync(DataSourceDefinition dataSource, string userQuestion, ILlmService? llmService = null)
     {
-        if (dataSource.ConnectionParameters.TryGetValue("IncludedSchemas", out var schemasParam))
-        {
-            var schemasList = schemasParam.Split(',')
-                .Select(s => s.Trim())
-                .Where(s => !string.IsNullOrEmpty(s))
-                .ToArray();
-            
-            if (schemasList.Length > 0)
-                return schemasList;
-        }
+        // Call the base implementation which has the logic
+        return await base.GenerateTitleAsync(dataSource, userQuestion, llmService);
+    }
+
+    public override Task<List<QueryExample>> GetQueryExamplesAsync(DataSourceDefinition dataSource)
+    {
+        // Check if this is a specialized plugin data source
+        var plugins = dataSource.ConnectionParameters.TryGetValue("PluginId", out var pluginId) ? pluginId : null;
         
-        return new[] { "public" };
+        // Return generic PostgreSQL examples
+        return Task.FromResult(new List<QueryExample>
+        {
+            new QueryExample
+            {
+                Title = "Table Row Counts",
+                Category = "Basic Statistics",
+                NaturalLanguageQuery = "How many rows are in each table?",
+                SqlQuery = @"SELECT 
+    schemaname AS schema_name,
+    tablename AS table_name,
+    n_live_tup AS row_count
+FROM pg_stat_user_tables
+ORDER BY n_live_tup DESC;",
+                Description = "Shows approximate row counts for all tables"
+            },
+            new QueryExample
+            {
+                Title = "Database Size",
+                Category = "Database Metrics",
+                NaturalLanguageQuery = "What's the size of the database?",
+                SqlQuery = @"SELECT 
+    pg_database_size(current_database()) AS size_bytes,
+    pg_size_pretty(pg_database_size(current_database())) AS size_pretty;",
+                Description = "Shows the total size of the current database"
+            },
+            new QueryExample
+            {
+                Title = "Table Sizes",
+                Category = "Storage Analysis",
+                NaturalLanguageQuery = "What are the largest tables?",
+                SqlQuery = @"SELECT
+    schemaname AS schema_name,
+    tablename AS table_name,
+    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
+    pg_total_relation_size(schemaname||'.'||tablename) AS size_bytes
+FROM pg_tables
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+LIMIT 20;",
+                Description = "Lists the 20 largest tables by size"
+            }
+        });
     }
 
-    private string[] GetExcludedTables(DataSourceDefinition dataSource)
+    public override async Task<Dictionary<string, string>> GetEntityDescriptionsAsync(DataSourceDefinition dataSource)
     {
-        if (dataSource.ConnectionParameters.TryGetValue("ExcludedTables", out var tablesParam))
-        {
-            return tablesParam.Split(',')
-                .Select(s => s.Trim())
-                .Where(s => !string.IsNullOrEmpty(s))
-                .ToArray();
-        }
+        var descriptions = new Dictionary<string, string>();
         
-        return Array.Empty<string>();
-    }
-
-    private int GetQueryTimeout(DataSourceDefinition dataSource)
-    {
-        if (dataSource.ConnectionParameters.TryGetValue("QueryTimeout", out var timeoutParam) &&
-            int.TryParse(timeoutParam, out var timeout))
-        {
-            return timeout;
-        }
-        
-        return 30; // Default 30 seconds
-    }
-
-    private int GetRowLimit(DataSourceDefinition dataSource)
-    {
-        if (dataSource.ConnectionParameters.TryGetValue("MaxRows", out var maxRowsParam) &&
-            int.TryParse(maxRowsParam, out var maxRows))
-        {
-            return maxRows;
-        }
-        
-        return 1000; // Default 1000 rows
-    }
-
-    private object ConvertPostgresType(object value)
-    {
-        // Convert PostgreSQL-specific types to JSON-serializable types
-        return value switch
-        {
-            // Arrays
-            Array array => array.Cast<object>().ToList(),
-            // Dates with infinity
-            DateTime dt when dt == DateTime.MinValue => null,
-            DateTime dt when dt == DateTime.MaxValue => null,
-            // NpgsqlPoint, NpgsqlBox, etc. would need custom handling
-            _ => value
-        };
-    }
-
-    private string FormatPostgresError(NpgsqlException ex)
-    {
-        var message = ex.Message;
-    
-        if (ex is PostgresException pgEx)
-        {
-            if (!string.IsNullOrEmpty(pgEx.Detail))
-                message += $" Detail: {pgEx.Detail}";
-            
-            if (!string.IsNullOrEmpty(pgEx.Hint))
-                message += $" Hint: {pgEx.Hint}";
-            
-            if (!string.IsNullOrEmpty(pgEx.Where))
-                message += $" Where: {pgEx.Where}";
-            
-            if (!string.IsNullOrEmpty(pgEx.SchemaName))
-                message += $" Schema: {pgEx.SchemaName}";
-            
-            if (!string.IsNullOrEmpty(pgEx.TableName))
-                message += $" Table: {pgEx.TableName}";
-            
-            if (!string.IsNullOrEmpty(pgEx.ColumnName))
-                message += $" Column: {pgEx.ColumnName}";
-        }
-        else
-        {
-            // Fallback for other NpgsqlException types
-            if (ex.InnerException != null)
-                message += $" Inner: {ex.InnerException.Message}";
-            
-            if (!string.IsNullOrEmpty(ex.Source))
-                message += $" Source: {ex.Source}";
-        }
-    
-        return message;
-    }
-
-    private async Task<string> GetServerParameter(NpgsqlConnection connection, string parameter)
-    {
         try
         {
-            await using var cmd = new NpgsqlCommand($"SHOW {parameter}", connection);
-            var result = await cmd.ExecuteScalarAsync();
-            return result?.ToString() ?? "Unknown";
+            await using var connection = new NpgsqlConnection(dataSource.GetConnectionString());
+            await connection.OpenAsync();
+            
+            // Get table comments
+            var includedSchemas = GetIncludedSchemas(dataSource);
+            var schemasList = string.Join(",", includedSchemas.Select(s => $"'{s}'"));
+            
+            await using var cmd = new NpgsqlCommand($@"
+                SELECT 
+                    c.relname AS table_name,
+                    obj_description(c.oid) AS table_comment
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind = 'r'
+                  AND n.nspname IN ({schemasList})
+                  AND obj_description(c.oid) IS NOT NULL;", connection);
+            
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var tableName = reader.GetString(0);
+                var comment = reader.GetString(1);
+                descriptions[tableName] = comment;
+            }
         }
-        catch
+        catch (Exception ex)
         {
-            return "Unknown";
+            _logger.LogWarning(ex, "Failed to get entity descriptions for data source {DataSourceId}", dataSource.Id);
         }
+        
+        return descriptions;
     }
 
-    private async Task ExtractSchemaInfo(NpgsqlConnection connection, string[] includedSchemas, 
+    public override Task<string> GetQueryLanguageAsync(DataSourceDefinition dataSource)
+    {
+        return Task.FromResult("PostgreSQL");
+    }
+
+    public override Task<string> GetQueryLanguageDisplayAsync(DataSourceDefinition dataSource)
+    {
+        return Task.FromResult("PostgreSQL");
+    }
+
+    // Protected helper methods for schema extraction
+    protected async Task ExtractSchemaInfo(NpgsqlConnection connection, string[] includedSchemas, 
                                         string[] excludedTables, StringBuilder schemaInfo)
     {
         var schemasClause = string.Join(",", includedSchemas.Select(s => $"'{s}'"));
@@ -594,7 +531,7 @@ public class PostgresDataSourceProvider : IDataSourceProvider
         }
     }
 
-    private async Task ExtractKeysInformation(NpgsqlConnection connection, string[] includedSchemas, 
+    protected async Task ExtractKeysInformation(NpgsqlConnection connection, string[] includedSchemas, 
                                             string[] excludedTables, StringBuilder schemaInfo)
     {
         var schemasClause = string.Join(",", includedSchemas.Select(s => $"'{s}'"));
@@ -677,5 +614,176 @@ public class PostgresDataSourceProvider : IDataSourceProvider
             schemaInfo.AppendLine($"ALTER TABLE {schema}.{tableName} ADD FOREIGN KEY ({columnName}) " +
                                 $"REFERENCES {foreignSchema}.{foreignTable}({foreignColumn});");
         }
+    }
+
+    // Private helper methods
+    private string[] GetIncludedSchemas(DataSourceDefinition dataSource)
+    {
+        if (dataSource.ConnectionParameters.TryGetValue("IncludedSchemas", out var schemasParam))
+        {
+            var schemasList = schemasParam.Split(',')
+                .Select(s => s.Trim())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToArray();
+            
+            if (schemasList.Length > 0)
+                return schemasList;
+        }
+        
+        return new[] { "public" };
+    }
+
+    private string[] GetExcludedTables(DataSourceDefinition dataSource)
+    {
+        if (dataSource.ConnectionParameters.TryGetValue("ExcludedTables", out var tablesParam))
+        {
+            return tablesParam.Split(',')
+                .Select(s => s.Trim())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToArray();
+        }
+        
+        return Array.Empty<string>();
+    }
+
+    private int GetQueryTimeout(DataSourceDefinition dataSource)
+    {
+        if (dataSource.ConnectionParameters.TryGetValue("QueryTimeout", out var timeoutParam) &&
+            int.TryParse(timeoutParam, out var timeout))
+        {
+            return timeout;
+        }
+        
+        return 30; // Default 30 seconds
+    }
+
+    private int GetRowLimit(DataSourceDefinition dataSource)
+    {
+        if (dataSource.ConnectionParameters.TryGetValue("MaxRows", out var maxRowsParam) &&
+            int.TryParse(maxRowsParam, out var maxRows))
+        {
+            return maxRows;
+        }
+        
+        return 1000; // Default 1000 rows
+    }
+
+    private object? ConvertPostgresType(object value)
+    {
+        // Convert PostgreSQL-specific types to JSON-serializable types
+        return value switch
+        {
+            // Arrays
+            Array array => array.Cast<object>().ToList(),
+            // Dates with infinity
+            DateTime dt when dt == DateTime.MinValue => null,
+            DateTime dt when dt == DateTime.MaxValue => null,
+            // NpgsqlPoint, NpgsqlBox, etc. would need custom handling
+            _ => value
+        };
+    }
+
+    private string FormatPostgresError(NpgsqlException ex)
+    {
+        var message = ex.Message ?? "";
+    
+        if (ex is PostgresException pgEx)
+        {
+            if (!string.IsNullOrEmpty(pgEx.Detail))
+                message += $" Detail: {pgEx.Detail}";
+            
+            if (!string.IsNullOrEmpty(pgEx.Hint))
+                message += $" Hint: {pgEx.Hint}";
+            
+            if (!string.IsNullOrEmpty(pgEx.Where))
+                message += $" Where: {pgEx.Where}";
+            
+            if (!string.IsNullOrEmpty(pgEx.SchemaName))
+                message += $" Schema: {pgEx.SchemaName}";
+            
+            if (!string.IsNullOrEmpty(pgEx.TableName))
+                message += $" Table: {pgEx.TableName}";
+            
+            if (!string.IsNullOrEmpty(pgEx.ColumnName))
+                message += $" Column: {pgEx.ColumnName}";
+        }
+        else
+        {
+            // Fallback for other NpgsqlException types
+            if (ex.InnerException != null)
+                message += $" Inner: {ex.InnerException.Message}";
+            
+            if (!string.IsNullOrEmpty(ex.Source))
+                message += $" Source: {ex.Source}";
+        }
+    
+        // Ensure we never return null
+        return string.IsNullOrEmpty(message) ? "Unknown PostgreSQL error" : message;
+    }
+
+    private async Task<string> GetServerParameter(NpgsqlConnection connection, string parameter)
+    {
+        try
+        {
+            await using var cmd = new NpgsqlCommand($"SHOW {parameter}", connection);
+            var result = await cmd.ExecuteScalarAsync();
+            return result?.ToString() ?? "Unknown";
+        }
+        catch
+        {
+            return "Unknown";
+        }
+    }
+    
+    private async Task<PostgresFeatures> DetectPostgresFeatures(NpgsqlConnection connection, Version version)
+    {
+        var features = new PostgresFeatures();
+        
+        try
+        {
+            // Check for JSONB support (9.4+)
+            if (version >= new Version(9, 4))
+            {
+                await using var jsonbCmd = new NpgsqlCommand(
+                    "SELECT 1 FROM pg_type WHERE typname = 'jsonb'", connection);
+                var jsonbResult = await jsonbCmd.ExecuteScalarAsync();
+                features.HasJsonb = jsonbResult != null;
+            }
+            
+            // Check for basic JSON support (9.2+)
+            if (version >= new Version(9, 2))
+            {
+                await using var jsonCmd = new NpgsqlCommand(
+                    "SELECT 1 FROM pg_type WHERE typname = 'json'", connection);
+                var jsonResult = await jsonCmd.ExecuteScalarAsync();
+                features.HasJson = jsonResult != null;
+            }
+            
+            // Window functions (8.4+)
+            features.HasWindowFunctions = version >= new Version(8, 4);
+            
+            // CTE support (8.4+)
+            features.HasCte = version >= new Version(8, 4);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Error detecting PostgreSQL features, using version-based defaults");
+            
+            // Fallback to version-based detection
+            features.HasJsonb = version >= new Version(9, 4);
+            features.HasJson = version >= new Version(9, 2);
+            features.HasWindowFunctions = version >= new Version(8, 4);
+            features.HasCte = version >= new Version(8, 4);
+        }
+        
+        return features;
+    }
+    
+    private class PostgresFeatures
+    {
+        public bool HasJsonb { get; set; }
+        public bool HasJson { get; set; }
+        public bool HasWindowFunctions { get; set; }
+        public bool HasCte { get; set; }
     }
 }

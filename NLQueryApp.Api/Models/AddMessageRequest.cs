@@ -1,13 +1,10 @@
-namespace NLQueryApp.Core;
+namespace NLQueryApp.Api.Models;
 
-public class ChatMessage
+public class AddMessageRequest
 {
-    public int Id { get; set; }
     public string Role { get; set; } = "user";
     public string Content { get; set; } = string.Empty;
     public string? DataSourceId { get; set; }
     public string? SqlQuery { get; set; }
     public bool? QuerySuccess { get; set; }
-    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
-    public int ConversationId { get; set; }
 }

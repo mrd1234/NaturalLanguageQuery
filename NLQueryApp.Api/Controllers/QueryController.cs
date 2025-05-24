@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using NLQueryApp.Api.Models;
 using NLQueryApp.Api.Services;
 using NLQueryApp.Core;
@@ -36,7 +36,8 @@ public class QueryController : ControllerBase
             var result = await _queryService.ProcessNaturalLanguageQueryAsync(
                 query.DataSourceId,
                 query.Question,
-                query.LlmService); // This should be properly handled now
+                query.LlmService,
+                query.ConversationId); // Pass conversation context
         
             return Ok(result);
         }

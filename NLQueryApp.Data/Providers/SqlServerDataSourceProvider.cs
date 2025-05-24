@@ -208,4 +208,41 @@ SQL Server (T-SQL) specific notes:
     {
         throw new NotImplementedException();
     }
+
+    public Task<string> GenerateTitleAsync(DataSourceDefinition dataSource, string userQuestion, ILlmService? llmService = null)
+    {
+        throw new NotImplementedException();
+    }
+
+    public Task<List<QueryExample>> GetQueryExamplesAsync(DataSourceDefinition dataSource)
+    {
+        throw new NotImplementedException();
+    }
+
+    public Task<Dictionary<string, string>> GetEntityDescriptionsAsync(DataSourceDefinition dataSource)
+    {
+        throw new NotImplementedException();
+    }
+
+    public Task<bool> SetupSchemaAsync(DataSourceDefinition dataSource, bool dropIfExists = false)
+    {
+        throw new NotImplementedException();
+    }
+
+    public Task<string> GetPromptEnhancementsAsync(DataSourceDefinition dataSource)
+    {
+        throw new NotImplementedException();
+    }
+
+    public async Task<string> GetQueryLanguageAsync(DataSourceDefinition dataSource)
+    {
+        await Task.CompletedTask;
+        return "T-SQL";
+    }
+
+    public async Task<string> GetQueryLanguageDisplayAsync(DataSourceDefinition dataSource)
+    {
+        await Task.CompletedTask;
+        return "T-SQL (Transact-SQL)";
+    }
 }

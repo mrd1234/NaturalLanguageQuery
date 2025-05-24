@@ -1,4 +1,4 @@
-﻿namespace NLQueryApp.Core.Models;
+namespace NLQueryApp.Core.Models;
 
 public interface IDataSourceManager
 {
@@ -76,4 +76,39 @@ public interface IDataSourceManager
     /// Get version for a data source, if available
     /// </summary>
     Task<DatabaseInfo?> GetDatabaseInfoAsync(string dataSourceId);
+    
+    /// <summary>
+    /// Generate a contextual title for a conversation based on the data source
+    /// </summary>
+    Task<string> GenerateTitleAsync(string dataSourceId, string userQuestion, string? llmServiceName = null);
+    
+    /// <summary>
+    /// Get example queries for a data source
+    /// </summary>
+    Task<List<QueryExample>> GetQueryExamplesAsync(string dataSourceId);
+    
+    /// <summary>
+    /// Get entity descriptions for a data source
+    /// </summary>
+    Task<Dictionary<string, string>> GetEntityDescriptionsAsync(string dataSourceId);
+    
+    /// <summary>
+    /// Setup or migrate schema for a data source
+    /// </summary>
+    Task<bool> SetupSchemaAsync(string dataSourceId, bool dropIfExists = false);
+    
+    /// <summary>
+    /// Get prompt enhancements for a data source
+    /// </summary>
+    Task<string> GetPromptEnhancementsAsync(string dataSourceId);
+    
+    /// <summary>
+    /// Get the query language for a data source
+    /// </summary>
+    Task<string> GetQueryLanguageAsync(string dataSourceId);
+    
+    /// <summary>
+    /// Get the display name for the query language of a data source
+    /// </summary>
+    Task<string> GetQueryLanguageDisplayAsync(string dataSourceId);
 }

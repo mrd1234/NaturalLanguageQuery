@@ -11,6 +11,9 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Add HttpClient factory
+builder.Services.AddHttpClient();
+
 // Configure CORS
 builder.Services.AddCors(options =>
 {
@@ -30,14 +33,76 @@ builder.Services.AddDataServices();
 builder.Services.AddLlmServices(builder.Configuration);
 builder.Services.AddScoped<QueryService>();
 
+// Register plugins if enabled
+if (builder.Configuration.GetValue<bool>("EnableDataSourceTemplate:team-movements", false))
+{
+    // Dynamically load the Team Movements plugin assembly
+    try
+    {
+        var pluginAssembly = System.Reflection.Assembly.Load("NLQueryApp.Plugins.TeamMovements");
+        var pluginType = pluginAssembly.GetType("NLQueryApp.Plugins.TeamMovements.TeamMovementsPlugin");
+        if (pluginType != null)
+        {
+            builder.Services.AddSingleton(typeof(IDataSourcePlugin), pluginType);
+        }
+    }
+    catch (Exception ex)
+    {
+        // Log the warning after the app is built instead of creating a service provider early
+        builder.Services.AddSingleton<PluginLoadException>(new PluginLoadException 
+        { 
+            Message = "Team Movements plugin assembly not found. Plugin features will be disabled.",
+            Exception = ex
+        });
+    }
+}
+
 var app = builder.Build();
+
+// Log any plugin load exceptions
+var pluginLoadException = app.Services.GetService<PluginLoadException>();
+if (pluginLoadException != null)
+{
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
+    logger.LogWarning(pluginLoadException.Exception, pluginLoadException.Message);
+}
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+    
+    // Add developer exception page for better error visibility
+    app.UseDeveloperExceptionPage();
 }
+
+// Add global exception handling middleware
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (Exception ex)
+    {
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogError(ex, "Unhandled exception occurred. Path: {Path}", context.Request.Path);
+        
+        context.Response.StatusCode = 500;
+        context.Response.ContentType = "application/json";
+        
+        var errorResponse = new
+        {
+            error = "Internal Server Error",
+            message = app.Environment.IsDevelopment() ? ex.Message : "An error occurred processing your request",
+            detail = app.Environment.IsDevelopment() ? ex.ToString() : null,
+            path = context.Request.Path.ToString()
+        };
+        
+        await context.Response.WriteAsJsonAsync(errorResponse);
+    }
+});
 
 //app.UseHttpsRedirection();
 app.UseCors("AllowBlazorApp");
@@ -74,79 +139,126 @@ using (var scope = app.Services.CreateScope())
             else
             {
                 logger.LogCritical(ex, "Database initialization failed after {MaxRetries} attempts", maxRetries);
+                // Don't throw here - let the app start even if DB init fails
+                // The error will be caught when the first request tries to use the DB
             }
         }
     }
 
-    // Initialize default data source if none exists
+    // Load data source templates if configured
     try
     {
         var dataSourceManager = scope.ServiceProvider.GetRequiredService<IDataSourceManager>();
         var dataSources = await dataSourceManager.GetDataSourcesAsync();
         
-        var defaultDsConfig = builder.Configuration.GetSection("DefaultDataSource");
-        var defaultDsId = defaultDsConfig["Id"] ?? "team-movements";
+        logger.LogInformation("Found {Count} existing data sources", dataSources.Count);
         
-        // Check if the default data source already exists
-        var existingDefault = dataSources.FirstOrDefault(ds => ds.Id == defaultDsId);
+        // Check if we should create any templates
+        var dataSourceTemplates = builder.Configuration.GetSection("DataSourceTemplates").Get<List<DataSourceTemplate>>();
         
-        if (existingDefault == null && defaultDsConfig.Exists())
+        if (dataSourceTemplates != null && dataSourceTemplates.Any())
         {
-            logger.LogInformation("Creating default data source...");
+            logger.LogInformation("Found {Count} data source templates in configuration", dataSourceTemplates.Count);
             
-            var defaultDataSource = new DataSourceDefinition
+            foreach (var template in dataSourceTemplates)
             {
-                Id = defaultDsId,
-                Name = defaultDsConfig["Name"] ?? "Team Movements Database",
-                Description = defaultDsConfig["Description"] ?? "Default PostgreSQL data source",
-                Type = defaultDsConfig["Type"] ?? "postgres",
-                ConnectionParameters = new Dictionary<string, string>()
-            };
-            
-            // Build connection parameters from configuration
-            foreach (var config in defaultDsConfig.GetChildren())
-            {
-                var key = config.Key;
-                var value = config.Value;
-                
-                // Skip non-connection parameter fields
-                if (key == "Id" || key == "Name" || key == "Description" || key == "Type")
+                // Skip if already exists
+                if (dataSources.Any(ds => ds.Id == template.Id))
+                {
+                    logger.LogInformation("Data source {Id} already exists, skipping template", template.Id);
                     continue;
-                    
-                if (!string.IsNullOrEmpty(value))
-                {
-                    defaultDataSource.ConnectionParameters[key] = value;
                 }
-            }
-            
-            try
-            {
-                await dataSourceManager.CreateDataSourceAsync(defaultDataSource);
-                logger.LogInformation("Default data source created successfully");
                 
-                // Set the schema context if the file exists
-                var contextPath = "SchemaContext/team_movements_context.md";
-                if (File.Exists(contextPath))
+                // Skip optional templates unless explicitly enabled
+                if (template.Optional)
                 {
-                    var context = await File.ReadAllTextAsync(contextPath);
-                    await dataSourceManager.SetSchemaContextAsync(defaultDsId, context);
-                    logger.LogInformation("Schema context loaded for default data source");
+                    var enableKey = $"EnableDataSourceTemplate:{template.Id}";
+                    if (!builder.Configuration.GetValue<bool>(enableKey, false))
+                    {
+                        logger.LogInformation("Optional data source template {Id} is not enabled, skipping", template.Id);
+                        continue;
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Could not create default data source. It may already exist or connection may be invalid.");
+                
+                try
+                {
+                    logger.LogInformation("Creating data source from template: {Id}", template.Id);
+                    
+                    var dataSource = new DataSourceDefinition
+                    {
+                        Id = template.Id,
+                        Name = template.Name,
+                        Description = template.Description,
+                        Type = template.Type,
+                        ConnectionParameters = new Dictionary<string, string>(template.DefaultConnectionParameters)
+                    };
+                    
+                    // Override with environment-specific values if present
+                    foreach (var param in dataSource.ConnectionParameters.Keys.ToList())
+                    {
+                        var envValue = builder.Configuration[$"DataSources:{template.Id}:{param}"];
+                        if (!string.IsNullOrEmpty(envValue))
+                        {
+                            dataSource.ConnectionParameters[param] = envValue;
+                        }
+                    }
+                    
+                    await dataSourceManager.CreateDataSourceAsync(dataSource);
+                    logger.LogInformation("Created data source {Id} from template", template.Id);
+                    
+                    // Load schema context if provided
+                    if (!string.IsNullOrEmpty(template.SchemaContextFile) && File.Exists(template.SchemaContextFile))
+                    {
+                        var context = await File.ReadAllTextAsync(template.SchemaContextFile);
+                        await dataSourceManager.SetSchemaContextAsync(template.Id, context);
+                        logger.LogInformation("Loaded schema context for data source {Id}", template.Id);
+                    }
+                    else if (!string.IsNullOrEmpty(template.DefaultSchemaContext))
+                    {
+                        await dataSourceManager.SetSchemaContextAsync(template.Id, template.DefaultSchemaContext);
+                        logger.LogInformation("Set default schema context for data source {Id}", template.Id);
+                    }
+                    
+                    // Setup schema if this is a specialized data source type with a plugin
+                    var plugins = scope.ServiceProvider.GetServices<IDataSourcePlugin>();
+                    var plugin = plugins.FirstOrDefault(p => p.DataSourceType == template.Type);
+                    if (plugin != null)
+                    {
+                        logger.LogInformation("Found plugin for data source type {Type}, initializing schema", template.Type);
+                        var connectionString = dataSource.GetConnectionString();
+                        await plugin.InitializeSchemaAsync(connectionString);
+                        
+                        // Set the default schema context from the plugin
+                        var pluginContext = plugin.GetDefaultSchemaContext();
+                        if (!string.IsNullOrEmpty(pluginContext))
+                        {
+                            await dataSourceManager.SetSchemaContextAsync(template.Id, pluginContext);
+                            logger.LogInformation("Set plugin-provided schema context for data source {Id}", template.Id);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Failed to create data source from template {Id}", template.Id);
+                }
             }
         }
-        else if (existingDefault != null)
+        else
         {
-            logger.LogInformation("Default data source already exists");
+            logger.LogInformation("No data source templates configured");
         }
     }
     catch (Exception ex)
     {
-        logger.LogError(ex, "Failed to initialize default data source");
+        logger.LogError(ex, "Failed to initialize data sources");
     }
 }
 
 app.Run();
+
+// Helper class to store plugin load exceptions
+internal class PluginLoadException
+{
+    public string Message { get; init; } = string.Empty;
+    public Exception? Exception { get; init; }
+}

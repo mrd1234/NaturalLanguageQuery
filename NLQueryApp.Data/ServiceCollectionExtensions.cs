@@ -1,21 +1,32 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using NLQueryApp.Core;
 using NLQueryApp.Core.Models;
 using NLQueryApp.Data.Providers;
 using NLQueryApp.Data.Services;
 
-namespace NLQueryApp.Data; // Make sure this matches the using directive in Program.cs
+namespace NLQueryApp.Data;
 
 public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddDataServices(this IServiceCollection services)
     {
-        // Register data source providers
-        services.AddSingleton<IDataSourceProvider, PostgresDataSourceProvider>();
-        // Add more providers as they are implemented:
-        // services.AddSingleton<IDataSourceProvider, SqlServerDataSourceProvider>();
-        // services.AddSingleton<IDataSourceProvider, MySqlDataSourceProvider>();
-        // services.AddSingleton<IDataSourceProvider, MongoDbDataSourceProvider>();
+        // Register base data source providers
+        services.AddSingleton<PostgresDataSourceProvider>();
+        services.AddSingleton<SqlServerDataSourceProvider>();
+        // Add more base providers as they are implemented:
+        // services.AddSingleton<MySqlDataSourceProvider>();
+        // services.AddSingleton<MongoDbDataSourceProvider>();
+        
+        // Register specialized data source providers
+        services.AddSingleton<TeamMovementsDataSourceProvider>();
+        
+        // Register all providers as IDataSourceProvider for injection into DataSourceManager
+        services.AddSingleton<IDataSourceProvider>(sp => sp.GetRequiredService<PostgresDataSourceProvider>());
+        services.AddSingleton<IDataSourceProvider>(sp => sp.GetRequiredService<TeamMovementsDataSourceProvider>());
+        // Uncomment as providers are implemented:
+        // services.AddSingleton<IDataSourceProvider>(sp => sp.GetRequiredService<SqlServerDataSourceProvider>());
+        // services.AddSingleton<IDataSourceProvider>(sp => sp.GetRequiredService<MySqlDataSourceProvider>());
+        // services.AddSingleton<IDataSourceProvider>(sp => sp.GetRequiredService<MongoDbDataSourceProvider>());
         
         // Register data source manager
         services.AddSingleton<IDataSourceManager, DataSourceManager>();

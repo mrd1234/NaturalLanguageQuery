@@ -1,9 +1,9 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Npgsql;
 using NpgsqlTypes;
 
-namespace NLQueryApp.Api.Controllers.Import;
+namespace NLQueryApp.Plugins.TeamMovements.Import;
 
 public class DataImporter
 {
@@ -24,7 +24,7 @@ public class DataImporter
         _connectionString = connectionString;
     }
     
-    public async Task ImportData(string directoryPath, SchemaAnalyzer analyzer)
+    public async Task ImportData(string directoryPath)
     {
         // Find all matching files recursively
         var files = Directory.GetFiles(directoryPath, "tms_team_movements_team_movement_*.json", 
@@ -2113,7 +2113,7 @@ public class DataImporter
                 longitude = SafeParseDecimal(lngEl, "longitude");
             }
             
-            // Update cost centre with location data
+            // Update or insert the cost centre with location data
             await UpsertCostCentreWithLocation(conn, ccCode, ccName, addressFormatted, latitude, longitude);
         }
     }

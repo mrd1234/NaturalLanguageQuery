@@ -1,4 +1,4 @@
-﻿namespace NLQueryApp.Api.Controllers.Import;
+namespace NLQueryApp.Plugins.TeamMovements.Import;
 
 /// <summary>
 /// Represents a lookup item with code and name

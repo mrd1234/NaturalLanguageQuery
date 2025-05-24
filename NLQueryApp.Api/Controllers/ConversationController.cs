@@ -1,17 +1,35 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
+using NLQueryApp.Api.Models;
 using NLQueryApp.Core;
-using NLQueryApp.LlmServices;
+using NLQueryApp.Core.Models;
 
 namespace NLQueryApp.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ConversationController(IDatabaseService dbService, LlmServiceFactory llmServiceFactory, IConfiguration configuration, ILogger<ConversationController> logger) : ControllerBase
+public class ConversationController : ControllerBase
 {
+    private readonly IDatabaseService _dbService;
+    private readonly IDataSourceManager _dataSourceManager;
+    private readonly IConfiguration _configuration;
+    private readonly ILogger<ConversationController> _logger;
+
+    public ConversationController(
+        IDatabaseService dbService, 
+        IDataSourceManager dataSourceManager,
+        IConfiguration configuration, 
+        ILogger<ConversationController> logger)
+    {
+        _dbService = dbService;
+        _dataSourceManager = dataSourceManager;
+        _configuration = configuration;
+        _logger = logger;
+    }
+
     [HttpGet]
     public async Task<ActionResult<List<Conversation>>> GetConversations()
     {
-        return await dbService.GetConversationsAsync();
+        return await _dbService.GetConversationsAsync();
     }
     
     [HttpGet("{id}")]
@@ -19,7 +37,7 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
     {
         try
         {
-            var conversation = await dbService.GetConversationAsync(id);
+            var conversation = await _dbService.GetConversationAsync(id);
             return conversation;
         }
         catch (Exception)
@@ -33,7 +51,7 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
     {
         try
         {
-            var conversation = await dbService.GetConversationAsync(id);
+            var conversation = await _dbService.GetConversationAsync(id);
             return Ok(new { title = conversation.Title });
         }
         catch (Exception)
@@ -43,19 +61,30 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
     }
     
     [HttpPost]
-    public async Task<ActionResult<Conversation>> CreateConversation([FromBody] Conversation conversation)
+    public async Task<ActionResult<Conversation>> CreateConversation([FromBody] CreateConversationRequest request)
     {
-        var result = await dbService.CreateConversationAsync(conversation.Title);
+        var result = await _dbService.CreateConversationAsync(request.Title, request.DataSourceId);
         return CreatedAtAction(nameof(GetConversation), new { id = result.Id }, result);
     }
     
     [HttpPost("{conversationId}/messages")]
-    public async Task<ActionResult<AddMessageResponse>> AddMessage(int conversationId, [FromBody] ChatMessage message)
+    public async Task<ActionResult<AddMessageResponse>> AddMessage(
+        int conversationId, 
+        [FromBody] AddMessageRequest request)
     {
         try
         {
+            var message = new ChatMessage
+            {
+                Role = request.Role,
+                Content = request.Content,
+                DataSourceId = request.DataSourceId,
+                SqlQuery = request.SqlQuery,
+                QuerySuccess = request.QuerySuccess
+            };
+            
             // Add the message first
-            var result = await dbService.AddMessageAsync(conversationId, message);
+            var result = await _dbService.AddMessageAsync(conversationId, message);
             
             var response = new AddMessageResponse
             {
@@ -64,18 +93,35 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
             };
             
             // Check if this is the first user message and trigger title generation asynchronously
-            if (message.Role == "user" && !string.IsNullOrWhiteSpace(message.Content))
+            if (message.Role == "user" && !string.IsNullOrWhiteSpace(message.Content) && !string.IsNullOrWhiteSpace(request.DataSourceId))
             {
                 // Check if we should generate a title
-                var conversation = await dbService.GetConversationAsync(conversationId);
+                var conversation = await _dbService.GetConversationAsync(conversationId);
                 var userMessageCount = conversation.Messages?.Count(m => m.Role == "user") ?? 0;
                 
                 if (conversation.Title == "New Conversation" && userMessageCount == 1)
                 {
                     response.TitleGenerationInProgress = true;
                     
-                    // Start title generation asynchronously without awaiting
-                    _ = Task.Run(async () => await TryGenerateConversationTitleAsync(conversationId, message.Content));
+                    // Use data source manager for title generation
+                    _ = Task.Run(async () => 
+                    {
+                        try
+                        {
+                            var title = await _dataSourceManager.GenerateTitleAsync(
+                                request.DataSourceId, 
+                                message.Content,
+                                _configuration["LlmSettings:DefaultService"]);
+                            
+                            await _dbService.UpdateConversationTitleAsync(conversationId, title);
+                            _logger.LogInformation("Successfully generated title for conversation {ConversationId}: {Title}", 
+                                conversationId, title);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Failed to generate title for conversation {ConversationId}", conversationId);
+                        }
+                    });
                 }
             }
             
@@ -102,195 +148,57 @@ public class ConversationController(IDatabaseService dbService, LlmServiceFactor
                 return BadRequest(new { error = "Title cannot exceed 100 characters" });
             }
             
-            var success = await dbService.UpdateConversationTitleAsync(conversationId, request.Title.Trim());
+            var success = await _dbService.UpdateConversationTitleAsync(conversationId, request.Title.Trim());
             
             if (!success)
             {
                 return NotFound();
             }
             
-            var conversation = await dbService.GetConversationAsync(conversationId);
+            var conversation = await _dbService.GetConversationAsync(conversationId);
             return Ok(conversation);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error updating conversation title for conversation {ConversationId}", conversationId);
+            _logger.LogError(ex, "Error updating conversation title for conversation {ConversationId}", conversationId);
             return StatusCode(500, new { error = "Failed to update conversation title" });
         }
     }
     
-    private async Task TryGenerateConversationTitleAsync(int conversationId, string userMessage)
+    [HttpGet("{conversationId}/query-history")]
+    public async Task<ActionResult<List<QueryHistoryItem>>> GetQueryHistory(int conversationId, [FromQuery] string? dataSourceId = null)
     {
         try
         {
-            logger.LogInformation("Starting title generation for conversation {ConversationId}", conversationId);
+            var conversation = await _dbService.GetConversationAsync(conversationId);
             
-            // Get the conversation to check current title and message count
-            var conversation = await dbService.GetConversationAsync(conversationId);
-            
-            // Only generate title if it's still "New Conversation" and we have exactly 1 user message
-            var userMessageCount = conversation.Messages?.Count(m => m.Role == "user") ?? 0;
-            if (conversation.Title != "New Conversation" || userMessageCount > 1)
-            {
-                logger.LogInformation("Skipping title generation - conversation {ConversationId} already has custom title or multiple messages", conversationId);
-                return;
-            }
-            
-            // Generate title using LLM or fallback
-            var titleToUse = await GenerateConversationTitle(userMessage);
-            
-            // Update conversation title
-            await UpdateConversationTitleSafely(conversationId, titleToUse);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Unexpected error during title generation for conversation {ConversationId}", conversationId);
-        }
-    }
-    
-    private async Task<string> GenerateConversationTitle(string userMessage)
-    {
-        // Get the default LLM service
-        var defaultServiceName = configuration["LlmSettings:DefaultService"] ?? "ollama";
-        
-        try
-        {
-            var llmService = llmServiceFactory.GetService(defaultServiceName);
-            
-            // Check if the service has a utility model configured
-            if (!llmService.HasModel(ModelType.Utility))
-            {
-                logger.LogWarning("LLM service {ServiceName} doesn't have utility model configured, using fallback title generation", defaultServiceName);
-                return GenerateFallbackTitle(userMessage);
-            }
-            
-            // Generate title with reduced timeout (10 seconds instead of 15)
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            
-            try
-            {
-                var titleTask = llmService.GenerateTitleAsync(userMessage);
-                var completedTask = await Task.WhenAny(titleTask, Task.Delay(10000, cts.Token));
-                
-                if (completedTask == titleTask)
+            var queries = conversation.Messages
+                .Where(m => m.Role == "user" && 
+                           (dataSourceId == null || m.DataSourceId == dataSourceId))
+                .Select((m, index) => new QueryHistoryItem
                 {
-                    var generatedTitle = await titleTask;
-                    
-                    if (!string.IsNullOrWhiteSpace(generatedTitle) && generatedTitle != "New Conversation")
-                    {
-                        // Sanitize and validate the title
-                        var sanitizedTitle = SanitizeTitle(generatedTitle);
-                        if (!string.IsNullOrWhiteSpace(sanitizedTitle))
-                        {
-                            logger.LogInformation("Successfully generated title for conversation: {Title}", sanitizedTitle);
-                            return sanitizedTitle;
-                        }
-                    }
-                    
-                    logger.LogWarning("Generated title was empty or unchanged, using fallback");
-                }
-                else
-                {
-                    logger.LogWarning("Title generation timed out after 10 seconds, using fallback");
-                    cts.Cancel();
-                }
-            }
-            catch (Exception titleEx)
-            {
-                logger.LogWarning(titleEx, "Error during title generation, using fallback");
-            }
-        }
-        catch (ArgumentException ex)
-        {
-            logger.LogWarning("LLM service {ServiceName} not available for title generation: {Error}, using fallback", defaultServiceName, ex.Message);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error getting LLM service {ServiceName}, using fallback", defaultServiceName);
-        }
-        
-        // Fallback to simple title generation
-        return GenerateFallbackTitle(userMessage);
-    }
-    
-    private async Task UpdateConversationTitleSafely(int conversationId, string title)
-    {
-        try
-        {
-            var success = await dbService.UpdateConversationTitleAsync(conversationId, title);
-            if (!success)
-            {
-                logger.LogWarning("Failed to update title in database for conversation {ConversationId}", conversationId);
-            }
-            else
-            {
-                logger.LogInformation("Successfully updated title for conversation {ConversationId}: {Title}", conversationId, title);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error updating conversation title for conversation {ConversationId}", conversationId);
-        }
-    }
-    
-    private string GenerateFallbackTitle(string userMessage)
-    {
-        if (string.IsNullOrWhiteSpace(userMessage))
-            return "New Conversation";
-
-        // Clean the question
-        var cleaned = userMessage.Trim();
-        
-        // Remove common question starters to save space
-        var commonStarters = new[] { "how do i ", "how can i ", "what is ", "what are ", "show me ", "find ", "get ", "list ", "count " };
-        foreach (var starter in commonStarters)
-        {
-            if (cleaned.StartsWith(starter, StringComparison.OrdinalIgnoreCase))
-            {
-                cleaned = cleaned.Substring(starter.Length);
-                break;
-            }
-        }
-
-        // Truncate at word boundary
-        if (cleaned.Length <= 50)
-            return SanitizeTitle(cleaned);
-
-        var truncated = cleaned.Substring(0, 47);
-        var lastSpace = truncated.LastIndexOf(' ');
-        
-        if (lastSpace > 20) // Don't truncate too aggressively
-        {
-            truncated = truncated.Substring(0, lastSpace);
-        }
-        
-        return SanitizeTitle(truncated + "...");
-    }
-    
-    private string SanitizeTitle(string title)
-    {
-        if (string.IsNullOrWhiteSpace(title))
-            return "New Conversation";
+                    Index = index + 1,
+                    Question = m.Content,
+                    Timestamp = m.Timestamp,
+                    DataSourceId = m.DataSourceId,
+                    SqlQuery = conversation.Messages
+                        .FirstOrDefault(r => r.Role == "assistant" && 
+                                           r.Timestamp > m.Timestamp)?
+                        .SqlQuery,
+                    Success = conversation.Messages
+                        .FirstOrDefault(r => r.Role == "assistant" && 
+                                           r.Timestamp > m.Timestamp)?
+                        .QuerySuccess
+                })
+                .ToList();
             
-        // Remove problematic characters and clean up
-        var sanitized = title.Trim()
-            .Replace("\"", "")
-            .Replace("'", "")
-            .Replace("\n", " ")
-            .Replace("\r", "")
-            .Replace("\t", " ");
-        
-        // Collapse multiple spaces
-        while (sanitized.Contains("  "))
-            sanitized = sanitized.Replace("  ", " ");
-        
-        // Ensure reasonable length
-        if (sanitized.Length > 80)
-        {
-            sanitized = sanitized.Substring(0, 77) + "...";
+            return Ok(queries);
         }
-        
-        return string.IsNullOrWhiteSpace(sanitized) ? "New Conversation" : sanitized;
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting query history for conversation {ConversationId}", conversationId);
+            return StatusCode(500, new { error = "Failed to retrieve query history" });
+        }
     }
 }
 

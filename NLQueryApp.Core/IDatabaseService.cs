@@ -1,26 +1,18 @@
-﻿namespace NLQueryApp.Core;
+namespace NLQueryApp.Core;
 
 public interface IDatabaseService
 {
-    // Schema and query execution
-    Task<string> GetDatabaseSchemaAsync();
-    Task<string> GetSchemaContextAsync(string schemaName);
-    Task<QueryResult> ExecuteSqlQueryAsync(string sqlQuery);
-    
-    // Database initialization
+    // Database initialization - only for app's own database
     Task InitializeDatabaseAsync();
     
-    // Conversation management
+    // Conversation management - app-specific functionality
     Task<List<Conversation>> GetConversationsAsync();
     Task<Conversation> GetConversationAsync(int id);
-    Task<Conversation> CreateConversationAsync(string title);
+    Task<Conversation> CreateConversationAsync(string title, string? dataSourceId = null);
     Task<ChatMessage> AddMessageAsync(int conversationId, ChatMessage message);
     Task<bool> UpdateConversationTitleAsync(int conversationId, string title);
     
-    // Schema management (for flexibility)
+    // Generic utility methods (if needed)
     Task<List<string>> GetAvailableSchemasAsync();
     Task<List<string>> GetTablesInSchemaAsync(string schema);
-    
-    // Database setup for specific schemas
-    Task SetupTeamMovementsSchemaAsync(bool dropIfExists = false);
 }

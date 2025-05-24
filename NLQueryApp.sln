@@ -22,6 +22,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docker", "docker", "{BE3C69
 		.dockerignore = .dockerignore
 	EndProjectSection
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLQueryApp.Plugins.TeamMovements", "NLQueryApp.Plugins.TeamMovements\NLQueryApp.Plugins.TeamMovements.csproj", "{5E7AA114-955E-4FA0-A721-E467A79C9FBB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -51,5 +53,9 @@ Global
 		{7180223E-1D49-401F-AE3F-6C4A6DC7A166}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7180223E-1D49-401F-AE3F-6C4A6DC7A166}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7180223E-1D49-401F-AE3F-6C4A6DC7A166}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5E7AA114-955E-4FA0-A721-E467A79C9FBB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5E7AA114-955E-4FA0-A721-E467A79C9FBB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5E7AA114-955E-4FA0-A721-E467A79C9FBB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5E7AA114-955E-4FA0-A721-E467A79C9FBB}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

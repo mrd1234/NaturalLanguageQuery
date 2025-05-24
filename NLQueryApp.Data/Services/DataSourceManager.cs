@@ -1,8 +1,9 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NLQueryApp.Core;
 using NLQueryApp.Core.Models;
+using NLQueryApp.LlmServices;
 using Npgsql;
 
 namespace NLQueryApp.Data.Services;
@@ -12,15 +13,19 @@ public class DataSourceManager : IDataSourceManager
     private readonly string _connectionString;
     private readonly ILogger<DataSourceManager> _logger;
     private readonly Dictionary<string, IDataSourceProvider> _providers;
+    private readonly LlmServiceFactory? _llmServiceFactory;
+    private readonly IConfiguration _configuration;
     private bool _initialized = false;
 
     public DataSourceManager(IConfiguration configuration, ILogger<DataSourceManager> logger, 
-        IEnumerable<IDataSourceProvider> providers)
+        IEnumerable<IDataSourceProvider> providers, LlmServiceFactory? llmServiceFactory = null)
     {
         _connectionString = configuration.GetConnectionString("DefaultConnection") 
                            ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger;
         _providers = providers.ToDictionary(p => p.ProviderType.ToLowerInvariant());
+        _llmServiceFactory = llmServiceFactory;
+        _configuration = configuration;
     }
 
     private async Task EnsureInitializedAsync()
@@ -443,5 +448,112 @@ public class DataSourceManager : IDataSourceManager
     
         var provider = _providers[dataSource.Type.ToLowerInvariant()];
         return await provider.GetDatabaseInfoAsync(dataSource);
+    }
+    
+    public async Task<string> GenerateTitleAsync(string dataSourceId, string userQuestion, string? llmServiceName = null)
+    {
+        var dataSource = await GetDataSourceAsync(dataSourceId);
+        
+        if (!_providers.ContainsKey(dataSource.Type.ToLowerInvariant()))
+        {
+            throw new ArgumentException($"Provider type '{dataSource.Type}' is not supported");
+        }
+        
+        var provider = _providers[dataSource.Type.ToLowerInvariant()];
+        
+        // Get LLM service if available
+        ILlmService? llmService = null;
+        if (_llmServiceFactory != null)
+        {
+            try
+            {
+                llmServiceName ??= _configuration["LlmSettings:DefaultService"] ?? "ollama";
+                llmService = _llmServiceFactory.GetService(llmServiceName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get LLM service for title generation, using provider default");
+            }
+        }
+        
+        return await provider.GenerateTitleAsync(dataSource, userQuestion, llmService);
+    }
+    
+    public async Task<List<QueryExample>> GetQueryExamplesAsync(string dataSourceId)
+    {
+        var dataSource = await GetDataSourceAsync(dataSourceId);
+        
+        if (!_providers.ContainsKey(dataSource.Type.ToLowerInvariant()))
+        {
+            throw new ArgumentException($"Provider type '{dataSource.Type}' is not supported");
+        }
+        
+        var provider = _providers[dataSource.Type.ToLowerInvariant()];
+        return await provider.GetQueryExamplesAsync(dataSource);
+    }
+    
+    public async Task<Dictionary<string, string>> GetEntityDescriptionsAsync(string dataSourceId)
+    {
+        var dataSource = await GetDataSourceAsync(dataSourceId);
+        
+        if (!_providers.ContainsKey(dataSource.Type.ToLowerInvariant()))
+        {
+            throw new ArgumentException($"Provider type '{dataSource.Type}' is not supported");
+        }
+        
+        var provider = _providers[dataSource.Type.ToLowerInvariant()];
+        return await provider.GetEntityDescriptionsAsync(dataSource);
+    }
+    
+    public async Task<bool> SetupSchemaAsync(string dataSourceId, bool dropIfExists = false)
+    {
+        var dataSource = await GetDataSourceAsync(dataSourceId);
+        
+        if (!_providers.ContainsKey(dataSource.Type.ToLowerInvariant()))
+        {
+            throw new ArgumentException($"Provider type '{dataSource.Type}' is not supported");
+        }
+        
+        var provider = _providers[dataSource.Type.ToLowerInvariant()];
+        return await provider.SetupSchemaAsync(dataSource, dropIfExists);
+    }
+    
+    public async Task<string> GetPromptEnhancementsAsync(string dataSourceId)
+    {
+        var dataSource = await GetDataSourceAsync(dataSourceId);
+        
+        if (!_providers.ContainsKey(dataSource.Type.ToLowerInvariant()))
+        {
+            throw new ArgumentException($"Provider type '{dataSource.Type}' is not supported");
+        }
+        
+        var provider = _providers[dataSource.Type.ToLowerInvariant()];
+        return await provider.GetPromptEnhancementsAsync(dataSource);
+    }
+    
+    public async Task<string> GetQueryLanguageAsync(string dataSourceId)
+    {
+        var dataSource = await GetDataSourceAsync(dataSourceId);
+        
+        if (!_providers.ContainsKey(dataSource.Type.ToLowerInvariant()))
+        {
+            throw new ArgumentException($"Provider type '{dataSource.Type}' is not supported");
+        }
+        
+        var provider = _providers[dataSource.Type.ToLowerInvariant()];
+        return await provider.GetQueryLanguageAsync(dataSource);
+    }
+    
+    public async Task<string> GetQueryLanguageDisplayAsync(string dataSourceId)
+    {
+        var dataSource = await GetDataSourceAsync(dataSourceId);
+        
+        if (!_providers.ContainsKey(dataSource.Type.ToLowerInvariant()))
+        {
+            throw new ArgumentException($"Provider type '{dataSource.Type}' is not supported");
+        }
+        
+        var provider = _providers[dataSource.Type.ToLowerInvariant()];
+        return await provider.GetQueryLanguageDisplayAsync(dataSource);
     }
 }

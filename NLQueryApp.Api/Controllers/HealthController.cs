@@ -13,9 +13,9 @@ namespace NLQueryApp.Api.Controllers
         {
             try
             {
-                // Simple query to test database connectivity
-                var result = await dbService.ExecuteSqlQueryAsync("SELECT 1 as HealthCheck");
-                return result.Success ? Ok(new { status = "healthy", database = "connected" }) : StatusCode(500, new { status = "unhealthy", database = "error", message = result.ErrorMessage });
+                // Try to get available schemas as a health check
+                var schemas = await dbService.GetAvailableSchemasAsync();
+                return Ok(new { status = "healthy", database = "connected", schemaCount = schemas.Count });
             }
             catch (Exception ex)
             {
